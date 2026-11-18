@@ -1,0 +1,6 @@
+{
+  "name": "KAZI AFRICA",
+  "description": "Le réseau panafricain des services, compétences et opportunités professionnelles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

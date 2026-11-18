@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@theme {
+  --color-kazi-navy: #022554;
+  --color-kazi-navy-mid: #013470;
+  --color-kazi-navy-deep: #021D4B;
+  --color-kazi-orange: #FA6D02;
+  --color-kazi-orange-bright: #FD9303;
+  --color-kazi-green: #119339;
+  --color-kazi-green-accessible: #0E7D30;
+  --color-kazi-canvas: #F4F7FB;
+  --color-kazi-teal-deep: #102D3A;
+  --color-kazi-teal: #087F70;
+  --color-kazi-teal-light: #16A68A;
+  --color-kazi-gold: #E9B66B;
+  --color-kazi-ivory: #FAF7F0;
+  --color-kazi-ink: #23343B;
+}
+
+@layer base {
+  :root {
+    --kazi-navy: #022554;
+    --kazi-navy-mid: #013470;
+    --kazi-navy-deep: #021D4B;
+    --kazi-orange: #FA6D02;
+    --kazi-orange-bright: #FD9303;
+    --kazi-green: #119339;
+    --kazi-green-accessible: #0E7D30;
+    --kazi-canvas: #F4F7FB;
+    --kazi-white: #FFFFFF;
+    --kazi-teal-deep: #102D3A;
+    --kazi-teal: #087F70;
+    --kazi-teal-light: #16A68A;
+    --kazi-gold: #E9B66B;
+    --kazi-ivory: #FAF7F0;
+    --kazi-ink: #23343B;
+
+    /* Backward-compatible semantic aliases bound to official KAZI AFRICA palette */
+    --kazi-blue: var(--kazi-navy);
+    --kazi-bg: var(--kazi-ivory);
+  }
+
+  body {
+    font-family: 'DM Sans', 'Cairo', system-ui, -apple-system, sans-serif;
+    background-color: var(--kazi-ivory);
+    color: var(--kazi-ink);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Plus Jakarta Sans', 'Cairo', system-ui, -apple-system, sans-serif;
+  }
+
+  [dir="rtl"] body,
+  [dir="rtl"] h1,
+  [dir="rtl"] h2,
+  [dir="rtl"] h3,
+  [dir="rtl"] h4 {
+    font-family: 'Cairo', 'Plus Jakarta Sans', system-ui, sans-serif;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom clean scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+@media print {
+  header,
+  nav,
+  footer,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background-color: #FFFFFF !important;
+    color: #022554 !important;
+  }
+}
