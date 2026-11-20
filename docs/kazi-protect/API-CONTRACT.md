@@ -22,8 +22,8 @@ All country-admin endpoints enforce server-side role and country scope. A countr
 - POST /admin/partners/:id/verify — SUPER_ADMIN-only authorization verification with evidence reference.\n- PATCH /admin/countries/:iso2/products/:productCode/warranty-config — SUPER_ADMIN-only approved duration, scope and exclusions for an already approved warranty product.\n- POST /bookings/:bookingId/handover — assigned professional submits the checklist, work summary and before/after evidence references.\n- GET /bookings/:bookingId/handover — booking participants and country administrators retrieve the handover.\n- POST /handovers/:handoverId/respond — only the client accepts or records reservations.\n- POST /bookings/:bookingId/issue-warranty — assigned professional or country administrator may issue one contractual certificate only after accepted handover, client-validated completion and country/product release gates.\n- POST /admin/certificates/:certificateId/revoke — scoped country administrator or SUPER_ADMIN may revoke a KAZI contractual warranty with reason and evidence; insurer-issued policies cannot be revoked through KAZI.
 
 ## Planned / not yet implemented
-- POST /handover and professional eligibility endpoints.
-- Certificate revocation workflow and QR/PDF generation (issuance API is implemented; revocation and document rendering remain pending).
+- Professional eligibility endpoints and private evidence storage/upload lifecycle.
+- QR/PDF document rendering (issuance, public verification and contractual warranty revocation APIs are implemented).
 - Partner webhook-driven insurance status synchronization and assignment automation.
 - Partner webhooks (signature, timestamp, replay protection, idempotency).
 - Private evidence-document storage, retention and signed URL access.
