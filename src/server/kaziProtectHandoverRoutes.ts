@@ -30,10 +30,10 @@ export function registerKaziProtectHandoverRoutes(app: Express): void {
       const beforeRefs = req.body?.beforeEvidenceRefs;
       const afterRefs = req.body?.afterEvidenceRefs;
       const summary = typeof req.body?.workSummary === 'string' ? req.body.workSummary.trim() : '';
-      if (!UUID.test(bookingId) || !validChecklist(checklist) || !validRefs(beforeRefs) ||
+      if (!UUID.test(bookingId) || !validChecklist(checklist) || !checklist.every((item) => item.completed) || !validRefs(beforeRefs) ||
           !validRefs(afterRefs) || summary.length < 10 || summary.length > 4000 ||
           beforeRefs.length + afterRefs.length < 2) {
-        return res.status(400).json({ error: 'Checklist, work summary and before/after evidence are required' });
+        return res.status(400).json({ error: 'All checklist items must be completed; work summary and before/after evidence are required' });
       }
       try {
         const result = await db.transaction(async (tx) => {
@@ -52,7 +52,7 @@ export function registerKaziProtectHandoverRoutes(app: Express): void {
           const previous = rowsOf(await tx.execute(sql`
             SELECT id, status FROM kazi_protect_handovers WHERE booking_id = ${bookingId} LIMIT 1
           `))[0];
-          if (previous && ['ACCEPTED','RESERVATIONS_RECORDED'].includes(String(previous.status))) {
+          if (previous && previous.status === 'ACCEPTED') {
             return { error: 'ALREADY_FINALIZED' as const };
           }
           const saved = previous
@@ -62,6 +62,7 @@ export function registerKaziProtectHandoverRoutes(app: Express): void {
                   after_evidence_refs = ${JSON.stringify(afterRefs)}::jsonb,
                   work_summary = ${summary}, status = 'SUBMITTED',
                   submitted_by_profile_id = ${req.authCtx!.profileId},
+                  client_reservations = '[]'::jsonb, client_response = NULL, responded_at = NULL,
                   submitted_at = now(), updated_at = now()
                 WHERE id = ${previous.id}
                 RETURNING id, status, submitted_at AS "submittedAt"
