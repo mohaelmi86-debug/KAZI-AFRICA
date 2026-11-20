@@ -12,6 +12,7 @@ import {
   payments,
   paymentTransactions,
   refunds,
+  kaziProtectHandovers,
 } from '../db/schema.ts';
 
 // Allowed state transitions for Bookings (strictly enforced server-side)
@@ -73,6 +74,17 @@ export async function transitionBookingStatus(params: {
 
     if (!canTransitionBooking(booking.status, params.toStatus)) {
       throw new Error(`Invalid booking transition from ${booking.status} to ${params.toStatus}`);
+    }
+
+    if (params.toStatus === 'COMPLETED') {
+      const [handover] = await tx
+        .select({ id: kaziProtectHandovers.id, status: kaziProtectHandovers.status })
+        .from(kaziProtectHandovers)
+        .where(eq(kaziProtectHandovers.bookingId, booking.id))
+        .limit(1);
+      if (handover && handover.status !== 'ACCEPTED') {
+        throw new Error('Client must accept the KAZI PROTECT handover before validating completion');
+      }
     }
 
     const updatePayload: Partial<typeof bookings.$inferInsert> = {
