@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'src/server/kaziProtectRoutes.ts'
-      - 'src/server/kaziProtectIssuanceRoutes.ts'
+      - 'src/server/kaziProtectIssuanceRoutes.ts'\n      - 'src/server/kaziProtectHandoverRoutes.ts'
       - 'server.ts'
       - 'src/db/schema.ts'
       - 'src/data/kaziProtectCountryConfig.schema.json'
