@@ -227,6 +227,13 @@ export function registerKaziProtectRoutes(app: Express): void {
     if (review !== undefined && !['NOT_STARTED','IN_PROGRESS','APPROVED','REJECTED','EXPIRED'].includes(review)) {
       return res.status(400).json({ error: 'Invalid regulatory review status' });
     }
+    if (review === 'APPROVED') {
+      if (!req.authCtx!.roles.includes('SUPER_ADMIN')) return res.status(403).json({ error: 'Only central compliance administration can approve a country legal review' });
+      if (!Array.isArray(body.regulatoryEvidenceRefs) || body.regulatoryEvidenceRefs.length === 0 ||
+          typeof body.reviewerOrganization !== 'string' || !body.reviewerOrganization.trim()) {
+        return res.status(400).json({ error: 'Approved legal review requires evidence references and reviewer organization' });
+      }
+    }
     const gates = body.releaseGates;
     const gateKeys = ['legalReview','partnerVerified','wordingApproved','claimsProcessReady','privacyReview','paymentFlowVerified','countryUatPassed'];
     if (gates !== undefined && (!gates || typeof gates !== 'object' || Array.isArray(gates) ||
@@ -398,7 +405,7 @@ export function registerKaziProtectRoutes(app: Express): void {
     if (!requireCountryAdmin(req, res, iso2)) return;
     try {
       const readiness = await db.execute(sql`
-        SELECT s.regulatory_review_status, s.release_gates, p.id AS product_id,
+        SELECT s.status AS country_status, s.regulatory_review_status, s.release_gates, p.id AS product_id,
                p.requires_authorized_partner
         FROM kazi_protect_country_settings s
         JOIN kazi_protect_products p ON p.product_code = ${code}
@@ -408,6 +415,7 @@ export function registerKaziProtectRoutes(app: Express): void {
       if (!config) return res.status(404).json({ error: 'Country or product not found' });
       const gates = config.release_gates as Record<string, boolean>;
       const blockers = Object.entries(gates || {}).filter(([, passed]) => passed !== true).map(([key]) => key);
+      if (config.country_status !== 'ACTIVE') blockers.push('countryNotActive');
       if (config.regulatory_review_status !== 'APPROVED') blockers.push('regulatoryReviewStatus');
       if (config.requires_authorized_partner) {
         const partners = await db.execute(sql`
