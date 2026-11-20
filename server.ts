@@ -65,6 +65,7 @@ import {
   verifyWebhookSignature,
 } from './src/server/businessLogic.ts';
 import { registerKaziProtectRoutes } from './src/server/kaziProtectRoutes.ts';
+import { registerKaziProtectIssuanceRoutes } from './src/server/kaziProtectIssuanceRoutes.ts';
 import {
   aiAnalyzeTrendsAndRisks,
   aiAssistProfileAndTranslate,
@@ -167,7 +168,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Authorization,Content-Type,X-Kazi-Signature,X-Kazi-Timestamp,X-Kazi-Delivery-Id,X-Request-Id'
+      'Authorization,Content-Type,Idempotency-Key,X-Kazi-Signature,X-Kazi-Timestamp,X-Kazi-Delivery-Id,X-Request-Id'
     );
   }
 
@@ -3421,6 +3422,7 @@ app.post(
 );
 
 registerKaziProtectRoutes(app);
+registerKaziProtectIssuanceRoutes(app);
 
 // ============================================================================
 // GLOBAL API ERROR HANDLER (SANITIZED)
