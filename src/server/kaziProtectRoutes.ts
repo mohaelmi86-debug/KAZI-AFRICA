@@ -302,6 +302,117 @@ export function registerKaziProtectRoutes(app: Express): void {
     }
   });
 
+  // Country-scoped product inventory for the compliance console.
+  app.get('/api/protect/admin/countries/:iso2/products', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectReadLimit, async (req: AuthRequest, res) => {
+    const iso2 = String(req.params.iso2 || '').toUpperCase();
+    if (!validIso2(iso2)) return res.status(400).json({ error: 'Invalid country code' });
+    if (!requireCountryAdmin(req, res, iso2)) return;
+    try {
+      const result = await db.execute(sql`
+        SELECT p.product_code AS "productCode", p.name, p.category, p.requires_authorized_partner AS "requiresAuthorizedPartner",
+          cp.status, cp.terms_version AS "termsVersion", cp.disclosure_version AS "disclosureVersion",
+          cp.partner_ids AS "partnerIds", cp.local_config AS "localConfig", cp.approved_at AS "approvedAt"
+        FROM kazi_protect_country_products cp
+        JOIN kazi_protect_products p ON p.id = cp.product_id
+        WHERE cp.country_iso2 = ${iso2} ORDER BY p.category, p.name
+      `);
+      return res.json({ countryIso2: iso2, products: rowsOf(result) });
+    } catch (error) {
+      console.error('KAZI PROTECT product inventory error:', error);
+      return res.status(503).json({ error: 'Product inventory temporarily unavailable' });
+    }
+  });
+
+  // Partner registration is pending by default. Only central compliance can mark authorization verified.
+  app.get('/api/protect/admin/countries/:iso2/partners', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectReadLimit, async (req: AuthRequest, res) => {
+    const iso2 = String(req.params.iso2 || '').toUpperCase();
+    if (!validIso2(iso2)) return res.status(400).json({ error: 'Invalid country code' });
+    if (!requireCountryAdmin(req, res, iso2)) return;
+    try {
+      const result = await db.execute(sql`
+        SELECT id, partner_type AS "partnerType", legal_name AS "legalName",
+          registration_reference AS "registrationReference", authorization_reference AS "authorizationReference",
+          authorization_verified_at AS "authorizationVerifiedAt", authorization_evidence_ref AS "authorizationEvidenceRef",
+          territories, status, created_at AS "createdAt"
+        FROM kazi_protect_partners WHERE country_iso2 = ${iso2} ORDER BY created_at DESC
+      `);
+      return res.json({ countryIso2: iso2, partners: rowsOf(result) });
+    } catch (error) {
+      console.error('KAZI PROTECT partner list error:', error);
+      return res.status(503).json({ error: 'Partner list temporarily unavailable' });
+    }
+  });
+
+  app.post('/api/protect/admin/countries/:iso2/partners', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectWriteLimit, async (req: AuthRequest, res) => {
+    const iso2 = String(req.params.iso2 || '').toUpperCase();
+    if (!validIso2(iso2)) return res.status(400).json({ error: 'Invalid country code' });
+    if (!requireCountryAdmin(req, res, iso2)) return;
+    const body = req.body || {};
+    const types = ['INSURER','BROKER','INTERMEDIARY','EXPERT','QUALITY_PROVIDER','PAYMENT_PROVIDER'];
+    const legalName = typeof body.legalName === 'string' ? body.legalName.trim() : '';
+    const registrationReference = typeof body.registrationReference === 'string' ? body.registrationReference.trim() : '';
+    const authorizationReference = typeof body.authorizationReference === 'string' ? body.authorizationReference.trim() : '';
+    const authorizationEvidenceRef = typeof body.authorizationEvidenceRef === 'string' ? body.authorizationEvidenceRef.trim() : '';
+    const territories = parseJsonArray(body.territories || [iso2], 20);
+    if (!types.includes(body.partnerType) || legalName.length < 2 || legalName.length > 200 ||
+        registrationReference.length > 120 || authorizationReference.length > 160 ||
+        authorizationEvidenceRef.length > 500 || !territories || territories.some((code) => !ISO2.test(code))) {
+      return res.status(400).json({ error: 'Invalid partner registration details' });
+    }
+    try {
+      const inserted = await db.execute(sql`
+        INSERT INTO kazi_protect_partners
+          (country_iso2, partner_type, legal_name, registration_reference, authorization_reference,
+           authorization_evidence_ref, territories, status)
+        VALUES (${iso2}, ${body.partnerType}, ${legalName}, ${registrationReference || null},
+          ${authorizationReference || null}, ${authorizationEvidenceRef || null},
+          ${JSON.stringify(territories)}::jsonb, 'PENDING_VERIFICATION')
+        RETURNING id, partner_type AS "partnerType", legal_name AS "legalName", status, territories
+      `);
+      const partner = rowsOf(inserted)[0];
+      await db.execute(sql`
+        INSERT INTO kazi_protect_audit_events (country_iso2, actor_uid, entity_type, entity_id, action, after_state, request_id)
+        VALUES (${iso2}, ${req.authCtx!.uid}, 'partner', ${partner.id}, 'PARTNER_REGISTERED',
+          ${JSON.stringify({ partnerType: body.partnerType, legalName })}::jsonb, ${req.requestId || null})
+      `);
+      return res.status(201).json({ partner });
+    } catch (error) {
+      console.error('KAZI PROTECT partner registration error:', error);
+      return res.status(503).json({ error: 'Partner registration failed' });
+    }
+  });
+
+  app.post('/api/protect/admin/partners/:id/verify', requireAuth, requireAnyRole(['SUPER_ADMIN']), protectWriteLimit, async (req: AuthRequest, res) => {
+    const id = String(req.params.id || '');
+    if (!UUID.test(id)) return res.status(400).json({ error: 'Invalid partner identifier' });
+    const verificationEvidenceRef = typeof req.body?.verificationEvidenceRef === 'string' ? req.body.verificationEvidenceRef.trim() : '';
+    if (verificationEvidenceRef.length < 5 || verificationEvidenceRef.length > 500) {
+      return res.status(400).json({ error: 'Primary-source authorization evidence reference is required' });
+    }
+    try {
+      const result = await db.execute(sql`
+        UPDATE kazi_protect_partners SET status = 'VERIFIED',
+          authorization_verified_at = now(), authorization_evidence_ref = ${verificationEvidenceRef}, updated_at = now()
+        WHERE id = ${id} AND status = 'PENDING_VERIFICATION'
+          AND partner_type IN ('INSURER','BROKER','INTERMEDIARY')
+          AND authorization_reference IS NOT NULL
+        RETURNING id, country_iso2 AS "countryIso2", partner_type AS "partnerType",
+          legal_name AS "legalName", status, territories
+      `);
+      const partner = rowsOf(result)[0];
+      if (!partner) return res.status(409).json({ error: 'Partner is not eligible for verification or is not pending' });
+      await db.execute(sql`
+        INSERT INTO kazi_protect_audit_events (country_iso2, actor_uid, entity_type, entity_id, action, after_state, request_id)
+        VALUES (${partner.countryIso2}, ${req.authCtx!.uid}, 'partner', ${partner.id}, 'PARTNER_AUTHORIZATION_VERIFIED',
+          ${JSON.stringify({ verificationEvidenceRef })}::jsonb, ${req.requestId || null})
+      `);
+      return res.json({ partner });
+    } catch (error) {
+      console.error('KAZI PROTECT partner verification error:', error);
+      return res.status(503).json({ error: 'Partner verification failed' });
+    }
+  });
+
   // Country activation is a distinct gate; no product is activated implicitly.
   app.post('/api/protect/admin/countries/:iso2/activate', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectWriteLimit, async (req: AuthRequest, res) => {
     const iso2 = String(req.params.iso2 || '').toUpperCase();
