@@ -64,6 +64,7 @@ import {
   transitionBookingStatus,
   verifyWebhookSignature,
 } from './src/server/businessLogic.ts';
+import { registerKaziProtectRoutes } from './src/server/kaziProtectRoutes.ts';
 import {
   aiAnalyzeTrendsAndRisks,
   aiAssistProfileAndTranslate,
@@ -3418,6 +3419,8 @@ app.post(
     }
   }
 );
+
+registerKaziProtectRoutes(app);
 
 // ============================================================================
 // GLOBAL API ERROR HANDLER (SANITIZED)
