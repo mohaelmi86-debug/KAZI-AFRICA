@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'src/server/kaziProtectRoutes.ts'
+      - 'src/server/kaziProtectIssuanceRoutes.ts'
+      - 'server.ts'
       - 'src/db/schema.ts'
       - 'src/data/kaziProtectCountryConfig.schema.json'
       - 'drizzle/**'
