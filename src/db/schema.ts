@@ -736,6 +736,28 @@ export const kaziProtectClaims = pgTable('kazi_protect_claims', {
   index('kazi_protect_claims_country_status_idx').on(table.countryIso2, table.status, table.submittedAt),
 ]);
 
+export const kaziProtectHandovers = pgTable('kazi_protect_handovers', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'restrict' }).notNull().unique(),
+  countryId: uuid('country_id').references(() => countries.id, { onDelete: 'restrict' }).notNull(),
+  clientProfileId: uuid('client_profile_id').references(() => profiles.id, { onDelete: 'restrict' }).notNull(),
+  professionalProfileId: uuid('professional_profile_id').references(() => profiles.id, { onDelete: 'restrict' }).notNull(),
+  checklist: jsonb('checklist').$type<Array<{ item: string; completed: boolean; note?: string }>>().notNull().default([]),
+  beforeEvidenceRefs: jsonb('before_evidence_refs').$type<string[]>().notNull().default([]),
+  afterEvidenceRefs: jsonb('after_evidence_refs').$type<string[]>().notNull().default([]),
+  workSummary: text('work_summary').notNull(),
+  status: text('status').notNull().default('DRAFT'),
+  submittedByProfileId: uuid('submitted_by_profile_id').references(() => profiles.id, { onDelete: 'restrict' }),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  clientReservations: jsonb('client_reservations').$type<string[]>().notNull().default([]),
+  clientResponse: text('client_response'),
+  respondedAt: timestamp('responded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index('kazi_protect_handovers_country_status_idx').on(table.countryId, table.status, table.createdAt),
+]);
+
 export const kaziProtectAuditEvents = pgTable('kazi_protect_audit_events', {
   id: uuid('id').defaultRandom().primaryKey(),
   countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull(),
