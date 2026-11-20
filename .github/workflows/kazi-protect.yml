@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install --ignore-scripts --no-package-lock
+        run: npm install --no-package-lock
       - name: KAZI PROTECT contract tests
         run: npm run test
       - name: TypeScript check
