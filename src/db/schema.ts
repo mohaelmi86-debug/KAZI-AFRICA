@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -709,7 +709,11 @@ export const kaziProtectCertificates = pgTable('kazi_protect_certificates', {
   issuedAt: timestamp('issued_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  uniqueIndex('kazi_protect_certificates_booking_contractual_warranty_uidx')
+    .on(table.bookingId, table.protectionKind)
+    .where(sql\`booking_id IS NOT NULL AND protection_kind = 'CONTRACTUAL_WARRANTY'\`),
+]);
 
 export const kaziProtectClaims = pgTable('kazi_protect_claims', {
   id: uuid('id').defaultRandom().primaryKey(),
