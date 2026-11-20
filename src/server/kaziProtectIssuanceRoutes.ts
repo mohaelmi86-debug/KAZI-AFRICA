@@ -105,6 +105,12 @@ export function registerKaziProtectIssuanceRoutes(app: Express): void {
           if (booking.bookingStatus !== 'COMPLETED' || !booking.clientValidatedAt) {
             return { error: 'BOOKING_NOT_VALIDATED' as const };
           }
+          const handoverResult = await tx.execute(sql`
+            SELECT id FROM kazi_protect_handovers
+            WHERE booking_id = ${bookingId} AND status = 'ACCEPTED'
+            LIMIT 1
+          `);
+          if (!rowsOf(handoverResult)[0]) return { error: 'HANDOVER_NOT_ACCEPTED' as const };
           const existingResult = await tx.execute(sql`
             SELECT id, certificate_number AS "certificateNumber", status, starts_at AS "startsAt",
               ends_at AS "endsAt"
@@ -177,6 +183,7 @@ export function registerKaziProtectIssuanceRoutes(app: Express): void {
           if (result.error === 'NOT_FOUND') return res.status(404).json({ error: 'Booking not found' });
           if (result.error === 'FORBIDDEN') return res.status(403).json({ error: 'Booking is not assigned to this professional' });
           if (result.error === 'BOOKING_NOT_VALIDATED') return res.status(409).json({ error: 'Booking must be completed and validated by the client' });
+          if (result.error === 'HANDOVER_NOT_ACCEPTED') return res.status(409).json({ error: 'Client must accept the handover before warranty issuance' });
           if (result.error === 'PRODUCT_NOT_ACTIVE') return res.status(409).json({ error: 'Warranty product is not active for this country' });
           return res.status(409).json({ error: 'Approved warranty duration, wording and exclusions are required before issuance' });
         }
