@@ -73,6 +73,8 @@ test('contractual warranty issuance is gated by client-validated completion and 
   assert.match(issuance, /createHash\('sha256'\)/);
   assert.match(issuance, /randomBytes\(32\)/);
   assert.match(issuance, /CONTRACTUAL_WARRANTY_ISSUED/);
+  assert.match(drizzle, /kazi_protect_certificates_booking_contractual_warranty_uidx/);
+  assert.match(drizzle, /\.where\(sql/);
   assert.match(migration, /UNIQUE INDEX IF NOT EXISTS kazi_protect_certificates_booking_contractual_warranty_uidx/);
   assert.match(migration, /WHERE booking_id IS NOT NULL AND protection_kind = 'CONTRACTUAL_WARRANTY'/);
 });
