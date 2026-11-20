@@ -59,3 +59,10 @@ This foundation adds a database migration, product catalogue, country configurat
 - The raw 256-bit verification token is returned once; only its SHA-256 hash is stored. One contractual warranty per booking is enforced by a partial unique index.
 - The issue transaction locks the booking and commits certificate plus audit event atomically.
 - The migration is additive and must be reviewed/executed through the deployment process; this code change does not run it.
+
+## Work handover and customer acceptance
+- The assigned professional submits a structured checklist, work summary and before/after evidence references.
+- The client alone can accept the handover or record reservations. Reservations do not count as acceptance.
+- Handover acceptance does not automatically complete a booking or release payment; the existing booking/payment workflow remains authoritative.
+- Contractual warranty issuance requires both an ACCEPTED handover and the existing COMPLETED booking state with client validation timestamp.
+- Evidence references are metadata only in this release; private object storage, file scanning, signed access and retention policies remain separate production prerequisites.
