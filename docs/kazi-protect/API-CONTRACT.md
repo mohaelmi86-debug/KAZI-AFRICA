@@ -9,6 +9,8 @@ All country-admin endpoints enforce server-side role and country scope. A countr
 - POST /certificates/verify — public privacy-minimal opaque-token verification.
 - POST /claims — authenticated certificate-owner claim intake with idempotency key and evidence limits.
 - GET /claims/:id — claimant or authorized country administrator access.
+- GET /admin/countries/:iso2/claims — country-scoped claims queue.
+- POST /admin/claims/:id/transition — audited, role-checked workflow transitions; insurance coverage outcomes are blocked and remain insurer decisions.
 - GET /admin/countries/:iso2/settings — country-scoped compliance settings.
 - PATCH /admin/countries/:iso2/settings — allowlisted configuration changes with audit events; only SUPER_ADMIN can mark a legal review APPROVED, with evidence and reviewer organization.
 - GET /admin/countries/:iso2/release-check — diagnostic blockers only; no automatic activation.
@@ -22,7 +24,7 @@ All country-admin endpoints enforce server-side role and country scope. A countr
 ## Planned / not yet implemented
 - POST /handover and professional eligibility endpoints.
 - Certificate issuance and revocation workflows, including QR/PDF generation.
-- Claim assignment and controlled status-transition endpoints.
+- Partner webhook-driven insurance status synchronization and assignment automation.
 - Partner webhooks (signature, timestamp, replay protection, idempotency).
 - Private evidence-document storage, retention and signed URL access.
 - Dedicated partner portal and claims administration UI.
