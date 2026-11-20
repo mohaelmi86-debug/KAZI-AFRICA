@@ -94,3 +94,11 @@ test('handover requires before/after evidence and client acceptance before warra
   assert.match(migration, /booking_id uuid NOT NULL UNIQUE REFERENCES bookings/);
   assert.match(drizzle, /kaziProtectHandovers = pgTable/);
 });
+
+test('booking completion is gated by an accepted handover when one exists', () => {
+  const logic = read('../src/server/businessLogic.ts');
+  assert.match(logic, /params\.toStatus === 'COMPLETED'/);
+  assert.match(logic, /kaziProtectHandovers/);
+  assert.match(logic, /handover\.status !== 'ACCEPTED'/);
+  assert.match(logic, /Client must accept the KAZI PROTECT handover/);
+});
