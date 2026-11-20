@@ -49,3 +49,13 @@ Missing evidence blocks activation. READY is never inferred.
 
 ## Implementation boundary
 This foundation adds a database migration, product catalogue, country configuration contract and API contract. It does not activate insurance products, create insurer partnerships, issue legally binding policies, or mark any country compliant. API handlers, authorization tests, migration execution and UI integration are required before production use.
+
+## Contractual warranty issuance
+- A certificate can be issued only for a booking with status COMPLETED and a non-null client validation timestamp.
+- The requesting professional must be the professional assigned to the booking; a country administrator may act only within their assigned country.
+- The country and warranty product must be ACTIVE, the legal review APPROVED and every release gate true.
+- Duration, scope, exclusions and approved terms/disclosure versions must be configured by SUPER_ADMIN with an evidence reference. No default duration or legal wording is invented.
+- The certificate issuer is PROFESSIONAL and protection kind is CONTRACTUAL_WARRANTY. It is not an insurance policy.
+- The raw 256-bit verification token is returned once; only its SHA-256 hash is stored. One contractual warranty per booking is enforced by a partial unique index.
+- The issue transaction locks the booking and commits certificate plus audit event atomically.
+- The migration is additive and must be reviewed/executed through the deployment process; this code change does not run it.
