@@ -78,3 +78,19 @@ test('contractual warranty issuance is gated by client-validated completion and 
   assert.match(migration, /UNIQUE INDEX IF NOT EXISTS kazi_protect_certificates_booking_contractual_warranty_uidx/);
   assert.match(migration, /WHERE booking_id IS NOT NULL AND protection_kind = 'CONTRACTUAL_WARRANTY'/);
 });
+
+test('handover requires before/after evidence and client acceptance before warranty issuance', () => {
+  const handover = read('../src/server/kaziProtectHandoverRoutes.ts');
+  const issuance = read('../src/server/kaziProtectIssuanceRoutes.ts');
+  const migration = read('../drizzle/0005_kazi_protect_handovers.sql');
+  assert.match(handover, /beforeEvidenceRefs/);
+  assert.match(handover, /afterEvidenceRefs/);
+  assert.match(handover, /HANDOVER_SUBMITTED/);
+  assert.match(handover, /HANDOVER_ACCEPTED/);
+  assert.match(handover, /RESERVATIONS_RECORDED/);
+  assert.match(handover, /Only the booking client can respond/);
+  assert.match(issuance, /status = 'ACCEPTED'/);
+  assert.match(issuance, /HANDOVER_NOT_ACCEPTED/);
+  assert.match(migration, /booking_id uuid NOT NULL UNIQUE REFERENCES bookings/);
+  assert.match(drizzle, /kaziProtectHandovers = pgTable/);
+});
