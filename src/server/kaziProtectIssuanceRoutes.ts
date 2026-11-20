@@ -73,6 +73,61 @@ export function registerKaziProtectIssuanceRoutes(app: Express): void {
       }
     });
 
+  // Administrative revocation is limited to KAZI contractual warranties; insurer policies remain partner-controlled.
+  app.post('/api/protect/admin/certificates/:certificateId/revoke',
+    requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), writeLimit,
+    async (req: AuthRequest, res: Response) => {
+      const certificateId = String(req.params.certificateId || '');
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+      const evidenceRef = typeof req.body?.evidenceRef === 'string' ? req.body.evidenceRef.trim() : '';
+      if (!UUID.test(certificateId) || reason.length < 10 || reason.length > 2000 ||
+          evidenceRef.length < 5 || evidenceRef.length > 500) {
+        return res.status(400).json({ error: 'A valid certificate, reason and evidence reference are required' });
+      }
+      try {
+        const result = await db.transaction(async (tx) => {
+          const current = rowsOf(await tx.execute(sql`
+            SELECT id, country_iso2 AS "countryIso2", protection_kind AS "protectionKind",
+              status, certificate_number AS "certificateNumber"
+            FROM kazi_protect_certificates WHERE id = ${certificateId} FOR UPDATE
+          `))[0];
+          if (!current) return { error: 'NOT_FOUND' as const };
+          if (current.protectionKind !== 'CONTRACTUAL_WARRANTY') return { error: 'PARTNER_CONTROLLED' as const };
+          const iso2 = String(current.countryIso2);
+          if (!req.authCtx!.roles.includes('SUPER_ADMIN') &&
+              (!req.authCtx!.roles.includes('LOCAL_ADMIN') || !req.authCtx!.adminCountryIso2s.includes(iso2))) {
+            return { error: 'FORBIDDEN' as const };
+          }
+          if (!['ACTIVE','ISSUED'].includes(String(current.status))) return { error: 'INVALID_STATE' as const };
+          const updated = rowsOf(await tx.execute(sql`
+            UPDATE kazi_protect_certificates SET status = 'REVOKED', updated_at = now()
+            WHERE id = ${certificateId} AND status IN ('ACTIVE','ISSUED')
+            RETURNING id, certificate_number AS "certificateNumber", status
+          `))[0];
+          await tx.execute(sql`
+            INSERT INTO kazi_protect_audit_events
+              (country_iso2, actor_uid, entity_type, entity_id, action, before_state, after_state, request_id)
+            VALUES (${iso2}, ${req.authCtx!.uid}, 'certificate', ${certificateId},
+              'CONTRACTUAL_WARRANTY_REVOKED',
+              ${JSON.stringify({ status: current.status })}::jsonb,
+              ${JSON.stringify({ status: 'REVOKED', reason, evidenceRef })}::jsonb,
+              ${req.requestId || null})
+          `);
+          return { certificate: updated };
+        });
+        if ('error' in result) {
+          if (result.error === 'NOT_FOUND') return res.status(404).json({ error: 'Certificate not found' });
+          if (result.error === 'FORBIDDEN') return res.status(403).json({ error: 'Country scope not authorized' });
+          if (result.error === 'PARTNER_CONTROLLED') return res.status(409).json({ error: 'Insurance policy status must be changed by the issuing insurer or authorized partner' });
+          return res.status(409).json({ error: 'Certificate is not in a revocable state' });
+        }
+        return res.json({ certificate: result.certificate });
+      } catch (error) {
+        console.error('KAZI PROTECT certificate revocation error:', error);
+        return res.status(503).json({ error: 'Certificate revocation failed' });
+      }
+    });
+
   // One contractual warranty certificate per completed and client-validated booking.
   app.post('/api/protect/bookings/:bookingId/issue-warranty',
     requireAuth, requireAnyRole(['PROFESSIONAL','LOCAL_ADMIN','SUPER_ADMIN']), writeLimit,
