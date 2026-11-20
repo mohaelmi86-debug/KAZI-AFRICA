@@ -91,12 +91,9 @@ export function registerKaziProtectRoutes(app: Express): void {
         SELECT c.certificate_number AS "certificateNumber", c.country_iso2 AS "countryIso2",
                c.protection_kind AS "protectionKind", c.issuer_type AS "issuerType",
                c.starts_at AS "startsAt", c.ends_at AS "endsAt", c.status,
-               p.name AS "productName"
+               c.id AS "certificateId"
         FROM kazi_protect_certificates c
-        LEFT JOIN kazi_protect_country_products cp
-          ON cp.country_iso2 = c.country_iso2 AND cp.status IN ('ACTIVE','SUSPENDED')
-        LEFT JOIN kazi_protect_products p ON p.id = cp.product_id
-        WHERE c.verification_token_hash = ${tokenHash}
+                WHERE c.verification_token_hash = ${tokenHash}
         LIMIT 1
       `);
       const cert = rowsOf(result)[0];
@@ -137,7 +134,7 @@ export function registerKaziProtectRoutes(app: Express): void {
         FROM kazi_protect_certificates WHERE id = ${certificateId} LIMIT 1
       `);
       const cert = rowsOf(certResult)[0];
-      if (!cert || (cert.ownerProfileId !== ctx.profileId && !isCountryAdmin(ctx, String(cert.countryIso2)))) {
+      if (!cert || cert.ownerProfileId !== ctx.profileId) {
         return res.status(404).json({ error: 'Eligible certificate not found' });
       }
       if (!['ACTIVE','ISSUED'].includes(String(cert.status)) ||
@@ -356,7 +353,8 @@ export function registerKaziProtectRoutes(app: Express): void {
     const territories = parseJsonArray(body.territories || [iso2], 20);
     if (!types.includes(body.partnerType) || legalName.length < 2 || legalName.length > 200 ||
         registrationReference.length > 120 || authorizationReference.length > 160 ||
-        authorizationEvidenceRef.length > 500 || !territories || territories.some((code) => !ISO2.test(code))) {
+        authorizationEvidenceRef.length > 500 || !territories || territories.some((code) => !ISO2.test(code)) ||
+        (!req.authCtx!.roles.includes('SUPER_ADMIN') && territories.some((code) => code !== iso2))) {
       return res.status(400).json({ error: 'Invalid partner registration details' });
     }
     try {
