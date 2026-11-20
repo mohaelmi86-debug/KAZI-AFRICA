@@ -61,3 +61,18 @@ test('insurance claim workflow cannot decide coverage on behalf of insurer', () 
   assert.match(routes, /FOR UPDATE OF cl/);
   assert.match(routes, /CLAIM_STATUS_CHANGED/);
 });
+
+test('contractual warranty issuance is gated by client-validated completion and approved country terms', () => {
+  const issuance = read('../src/server/kaziProtectIssuanceRoutes.ts');
+  const migration = read('../drizzle/0004_kazi_protect_warranty_issuance.sql');
+  assert.match(issuance, /bookingStatus !== 'COMPLETED' \|\| !booking\.clientValidatedAt/);
+  assert.match(issuance, /issuer_type,\s*coverage_summary/);
+  assert.match(issuance, /'CONTRACTUAL_WARRANTY', 'PROFESSIONAL'/);
+  assert.match(issuance, /warrantyDurationDays/);
+  assert.match(issuance, /warrantyConfigApprovedBy/);
+  assert.match(issuance, /createHash\('sha256'\)/);
+  assert.match(issuance, /randomBytes\(32\)/);
+  assert.match(issuance, /CONTRACTUAL_WARRANTY_ISSUED/);
+  assert.match(migration, /UNIQUE INDEX IF NOT EXISTS kazi_protect_certificates_booking_contractual_warranty_uidx/);
+  assert.match(migration, /WHERE booking_id IS NOT NULL AND protection_kind = 'CONTRACTUAL_WARRANTY'/);
+});
