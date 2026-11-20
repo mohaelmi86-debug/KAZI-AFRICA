@@ -1,27 +1,32 @@
-# KAZI PROTECT API contract — implementation checklist
+# KAZI PROTECT API contract and implementation status
 Base path: /api/protect
 
-Authenticated server-side authorization is required unless explicitly stated public. Country scope is derived from the persisted protected object and checked against actor roles. A client-supplied country code never grants access.
+All country-admin endpoints enforce server-side role and country scope. A country code supplied by a client never grants access. Insurance decisions remain with the authorized insurer.
 
-## Customer
-- GET /catalog?countryIso2=XX&objectType=WORK — only ACTIVE products with all release gates satisfied.
-- POST /certificates/verify — opaque token; return minimal status, issuer type, dates and product label only.
-- GET /me/certificates — current user's certificates.
-- POST /claims — idempotent claim intake; validate ownership, eligibility and evidence limits.
-- GET /claims/:id — claimant, assigned partner or authorized admin only.
+## Implemented in this branch
+- GET /catalog?countryIso2=XX — public catalogue; returns only products where country and product are ACTIVE and all release gates are true.
+- GET /me/certificates — authenticated user's own certificates.
+- POST /certificates/verify — public privacy-minimal opaque-token verification.
+- POST /claims — authenticated certificate-owner claim intake with idempotency key and evidence limits.
+- GET /claims/:id — claimant or authorized country administrator access.
+- GET /admin/countries/:iso2/settings — country-scoped compliance settings.
+- PATCH /admin/countries/:iso2/settings — allowlisted configuration changes with audit events; only SUPER_ADMIN can mark a legal review APPROVED, with evidence and reviewer organization.
+- GET /admin/countries/:iso2/release-check — diagnostic blockers only; no automatic activation.
+- POST /admin/countries/:iso2/activate — explicit country activation after every release gate and central legal approval.
+- GET /admin/countries/:iso2/products — country product inventory.
+- POST /admin/countries/:iso2/approve-product/:productCode — explicit product approval with evidence and wording versions.
+- POST /admin/countries/:iso2/activate-product/:productCode — activation only after country/product gates and partner verification.
+- GET /admin/countries/:iso2/partners and POST /admin/countries/:iso2/partners — scoped partner register; new partners are pending.
+- POST /admin/partners/:id/verify — SUPER_ADMIN-only authorization verification with evidence reference.
 
-## Professional / business
-- GET /professional/eligibility?countryIso2=XX — required documents and eligible warranty options.
-- POST /handover — checklist, evidence references, acceptance and reservations.
-- GET /professional/certificates — own warranties and linked records.
-
-## Country / platform administration
-- GET /admin/countries/:iso2/settings
-- PATCH /admin/countries/:iso2/settings — scoped compliance admin, versioned update and audit event.
-- POST /admin/countries/:iso2/release-check — return blockers; never auto-activate.
-- POST /admin/countries/:iso2/activate-product/:productCode — reject unless legal evidence, partner and UAT gates pass.
-- POST /admin/partners and PATCH /admin/partners/:id — due diligence, authorization evidence and territory management.
-- POST /webhooks/partners/:partnerCode/claims — signed, timestamped, replay-protected and idempotent.
+## Planned / not yet implemented
+- POST /handover and professional eligibility endpoints.
+- Certificate issuance and revocation workflows, including QR/PDF generation.
+- Claim assignment and controlled status-transition endpoints.
+- Partner webhooks (signature, timestamp, replay protection, idempotency).
+- Private evidence-document storage, retention and signed URL access.
+- Dedicated partner portal and claims administration UI.
+- Formal RLS/database role isolation and automated integration/security tests.
 
 ## Mandatory invariants
 1. Insurance policy/certificate requires issuer INSURER, verified partner, external policy reference and active country/product approval.
@@ -31,9 +36,9 @@ Authenticated server-side authorization is required unless explicitly stated pub
 5. AI cannot generate premiums, limits, coverage promises or legal wording.
 6. A product is not visible if country or product is not ACTIVE.
 7. Writes use transaction boundaries and idempotency for external events.
-8. Activation is blocked when any applicable gate is false or evidence expired.
+8. Activation is blocked when any applicable gate is false or evidence is missing/expired.
 9. Public verification is privacy-minimal and rate-limited.
 10. Documents use private storage and short-lived signed access.
 
-## Not yet implemented
-Route handlers, UI, row-level authorization, storage integration, partner webhook adapters, migration execution and automated tests remain engineering work. Do not sell or activate products until completed and reviewed.
+## Release boundary
+The migrations are additive but have not been executed against any database in this task. Do not enable or sell products until migrations, UI, storage, security tests, partner due diligence and country legal reviews are complete.
