@@ -338,18 +338,18 @@ export function registerKaziProtectRoutes(app: Express): void {
                  cl.certificate_id AS "certificateId", cert.protection_kind AS "protectionKind"
           FROM kazi_protect_claims cl
           LEFT JOIN kazi_protect_certificates cert ON cert.id = cl.certificate_id
-          WHERE cl.id = ${id} FOR UPDATE
+          WHERE cl.id = ${id} FOR UPDATE OF cl
         `);
         const current = rowsOf(currentResult)[0];
         if (!current) return { error: 'NOT_FOUND' as const };
         if (!isCountryAdmin(req.authCtx!, String(current.countryIso2))) return { error: 'FORBIDDEN' as const };
         const transitions: Record<string, string[]> = {
           SUBMITTED: ['TRIAGE','INFO_REQUIRED','ASSIGNED'],
-          TRIAGE: ['INFO_REQUIRED','ASSIGNED','PARTNER_REVIEW','EXPERT_REVIEW'],
+          TRIAGE: ['INFO_REQUIRED','ASSIGNED','PARTNER_REVIEW','EXPERT_REVIEW','ACCEPTED','REJECTED'],
           INFO_REQUIRED: ['TRIAGE','ASSIGNED'],
           ASSIGNED: ['PARTNER_REVIEW','EXPERT_REVIEW','REPAIR_IN_PROGRESS'],
           PARTNER_REVIEW: ['EXPERT_REVIEW','INFO_REQUIRED'],
-          EXPERT_REVIEW: ['REPAIR_IN_PROGRESS','INFO_REQUIRED'],
+          EXPERT_REVIEW: ['REPAIR_IN_PROGRESS','INFO_REQUIRED','ACCEPTED','REJECTED'],
           ACCEPTED: ['REPAIR_IN_PROGRESS'],
           REPAIR_IN_PROGRESS: ['SETTLED'],
           SETTLED: ['CLOSED'],
