@@ -104,3 +104,12 @@ test('booking completion is gated by an accepted handover when one exists', () =
   assert.match(logic, /handover\.status !== 'ACCEPTED'/);
   assert.match(logic, /Client must accept the KAZI PROTECT handover/);
 });
+
+test('only KAZI contractual warranty certificates can be revoked by country admins', () => {
+  const issuance = read('../src/server/kaziProtectIssuanceRoutes.ts');
+  assert.match(issuance, /admin\/certificates\/:certificateId\/revoke/);
+  assert.match(issuance, /current\.protectionKind !== 'CONTRACTUAL_WARRANTY'/);
+  assert.match(issuance, /PARTNER_CONTROLLED/);
+  assert.match(issuance, /CONTRACTUAL_WARRANTY_REVOKED/);
+  assert.match(issuance, /evidenceRef/);
+});
