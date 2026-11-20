@@ -1,5 +1,18 @@
 # Google AI Studio — KAZI PROTECT frontend integration brief
 
+## Authentication and account onboarding — mandatory frontend scope
+
+This is part of the same frontend delivery. Do not leave the existing Google-only authentication as the sole registration path.
+
+- Implement email/password registration and sign-in alongside the existing Google button, using the current Firebase Auth instance.
+- Implement email verification, resend verification, password reset, and password change with Firebase Auth SDK methods. Never send passwords to the Express API or store them in the KAZI database.
+- Add distinct onboarding paths for Client, Professional / artisan / independent worker, Company / organization, and Training partner.
+- The selected account intention is not a role grant. New self-registered accounts receive only CLIENT. Professional, enterprise, training-partner and administrative privileges must be granted by backend-controlled workflows after required checks or approval.
+- Load country, service category and skill choices from existing APIs. Do not hard-code a short métier list; include a “not listed” suggestion path.
+- Preserve one Firebase UID and one KAZI profile when users link Google and email sign-in. Use Firebase provider linking; never merge accounts on matching email alone.
+- Enforce verified email using the server-verified Firebase ID token claim. The frontend verification screen is UX only and cannot authorize protected actions.
+- Full requirements and acceptance criteria: docs/kazi-protect/AUTHENTICATION-REGISTRATION-ONBOARDING.md
+
 ## Purpose
 Build the KAZI PROTECT user interface inside the existing KAZI AFRICA frontend. Do not create a second backend, database, authentication system, or parallel business-rules engine. The existing Express API is authoritative.
 
