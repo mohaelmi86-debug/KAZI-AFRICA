@@ -301,6 +301,94 @@ export function registerKaziProtectRoutes(app: Express): void {
     }
   });
 
+  // Country claims queue. Personal data and evidence references remain restricted to authorized staff.
+  app.get('/api/protect/admin/countries/:iso2/claims', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectReadLimit, async (req: AuthRequest, res) => {
+    const iso2 = String(req.params.iso2 || '').toUpperCase();
+    if (!validIso2(iso2)) return res.status(400).json({ error: 'Invalid country code' });
+    if (!requireCountryAdmin(req, res, iso2)) return;
+    try {
+      const result = await db.execute(sql`
+        SELECT id, claim_number AS "claimNumber", certificate_id AS "certificateId",
+          claimant_profile_id AS "claimantProfileId", claim_type AS "claimType", description,
+          evidence_refs AS "evidenceRefs", status, assigned_partner_id AS "assignedPartnerId",
+          submitted_at AS "submittedAt", updated_at AS "updatedAt"
+        FROM kazi_protect_claims WHERE country_iso2 = ${iso2}
+        ORDER BY submitted_at DESC LIMIT 100
+      `);
+      return res.json({ countryIso2: iso2, claims: rowsOf(result) });
+    } catch (error) {
+      console.error('KAZI PROTECT claims queue error:', error);
+      return res.status(503).json({ error: 'Claims queue temporarily unavailable' });
+    }
+  });
+
+  // Admin workflow transitions are explicit, country-scoped and append-only audited.
+  // Insurance coverage outcomes are deliberately excluded: only the insurer may decide them.
+  app.post('/api/protect/admin/claims/:id/transition', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectWriteLimit, async (req: AuthRequest, res) => {
+    const id = String(req.params.id || '');
+    const nextStatus = String(req.body?.status || '');
+    const resolutionSummary = typeof req.body?.resolutionSummary === 'string' ? req.body.resolutionSummary.trim() : '';
+    const allowedStatuses = ['TRIAGE','INFO_REQUIRED','ASSIGNED','PARTNER_REVIEW','EXPERT_REVIEW','ACCEPTED','REJECTED','REPAIR_IN_PROGRESS','SETTLED','CLOSED'];
+    if (!UUID.test(id) || !allowedStatuses.includes(nextStatus)) return res.status(400).json({ error: 'Invalid claim or target status' });
+    if (resolutionSummary.length > 2000) return res.status(400).json({ error: 'Resolution summary is too long' });
+    try {
+      const updated = await db.transaction(async (tx) => {
+        const currentResult = await tx.execute(sql`
+          SELECT cl.id, cl.country_iso2 AS "countryIso2", cl.status, cl.claim_type AS "claimType",
+                 cl.certificate_id AS "certificateId", cert.protection_kind AS "protectionKind"
+          FROM kazi_protect_claims cl
+          LEFT JOIN kazi_protect_certificates cert ON cert.id = cl.certificate_id
+          WHERE cl.id = ${id} FOR UPDATE
+        `);
+        const current = rowsOf(currentResult)[0];
+        if (!current) return { error: 'NOT_FOUND' as const };
+        if (!isCountryAdmin(req.authCtx!, String(current.countryIso2))) return { error: 'FORBIDDEN' as const };
+        const transitions: Record<string, string[]> = {
+          SUBMITTED: ['TRIAGE','INFO_REQUIRED','ASSIGNED'],
+          TRIAGE: ['INFO_REQUIRED','ASSIGNED','PARTNER_REVIEW','EXPERT_REVIEW'],
+          INFO_REQUIRED: ['TRIAGE','ASSIGNED'],
+          ASSIGNED: ['PARTNER_REVIEW','EXPERT_REVIEW','REPAIR_IN_PROGRESS'],
+          PARTNER_REVIEW: ['EXPERT_REVIEW','INFO_REQUIRED'],
+          EXPERT_REVIEW: ['REPAIR_IN_PROGRESS','INFO_REQUIRED'],
+          ACCEPTED: ['REPAIR_IN_PROGRESS'],
+          REPAIR_IN_PROGRESS: ['SETTLED'],
+          SETTLED: ['CLOSED'],
+        };
+        if (!(transitions[String(current.status)] || []).includes(nextStatus)) return { error: 'INVALID_TRANSITION' as const };
+        if (current.protectionKind === 'INSURER_POLICY' &&
+            ['ACCEPTED','REJECTED','REPAIR_IN_PROGRESS','SETTLED','CLOSED'].includes(nextStatus)) {
+          return { error: 'INSURER_DECISION_REQUIRED' as const };
+        }
+        const result = await tx.execute(sql`
+          UPDATE kazi_protect_claims SET status = ${nextStatus},
+            resolution_summary = CASE WHEN ${resolutionSummary || null} IS NULL THEN resolution_summary ELSE ${resolutionSummary || null} END,
+            updated_at = now()
+          WHERE id = ${id} RETURNING id, claim_number AS "claimNumber", country_iso2 AS "countryIso2",
+            status, updated_at AS "updatedAt"
+        `);
+        const claim = rowsOf(result)[0];
+        await tx.execute(sql`
+          INSERT INTO kazi_protect_audit_events (country_iso2, actor_uid, entity_type, entity_id, action, before_state, after_state, request_id)
+          VALUES (${current.countryIso2}, ${req.authCtx!.uid}, 'claim', ${id}, 'CLAIM_STATUS_CHANGED',
+            ${JSON.stringify({ status: current.status })}::jsonb,
+            ${JSON.stringify({ status: nextStatus, resolutionSummary: resolutionSummary || null })}::jsonb,
+            ${req.requestId || null})
+        `);
+        return { claim };
+      });
+      if ('error' in updated) {
+        if (updated.error === 'NOT_FOUND') return res.status(404).json({ error: 'Claim not found' });
+        if (updated.error === 'FORBIDDEN') return res.status(403).json({ error: 'Country scope not authorized' });
+        if (updated.error === 'INSURER_DECISION_REQUIRED') return res.status(409).json({ error: 'Insurance coverage decisions must be supplied by the authorized insurer' });
+        return res.status(409).json({ error: 'Claim status transition is not allowed' });
+      }
+      return res.json({ claim: updated.claim });
+    } catch (error) {
+      console.error('KAZI PROTECT claim transition error:', error);
+      return res.status(503).json({ error: 'Claim status update failed' });
+    }
+  });
+
   // Country-scoped product inventory for the compliance console.
   app.get('/api/protect/admin/countries/:iso2/products', requireAuth, requireAnyRole(['SUPER_ADMIN','LOCAL_ADMIN']), protectReadLimit, async (req: AuthRequest, res) => {
     const iso2 = String(req.params.iso2 || '').toUpperCase();
