@@ -1,0 +1,32 @@
+name: KAZI PROTECT checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/server/kaziProtectRoutes.ts'
+      - 'src/db/schema.ts'
+      - 'src/data/kaziProtectCountryConfig.schema.json'
+      - 'drizzle/**'
+      - 'tests/kazi-protect-contract.test.mjs'
+      - 'package.json'
+      - '.github/workflows/kazi-protect.yml'
+  push:
+    branches: [feat/kazi-protect-global]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-package-lock
+      - name: KAZI PROTECT contract tests
+        run: npm run test
+      - name: TypeScript check
+        run: npm run lint
+      - name: Frontend production build
+        run: npm run build
