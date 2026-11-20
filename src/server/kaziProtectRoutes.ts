@@ -98,7 +98,9 @@ export function registerKaziProtectRoutes(app: Express): void {
       `);
       const cert = rowsOf(result)[0];
       if (!cert) return res.status(404).json({ valid: false });
-      const active = cert.status === 'ACTIVE' && (!cert.endsAt || new Date(String(cert.endsAt)).getTime() >= Date.now());
+      const now = Date.now();
+      const active = cert.status === 'ACTIVE' && (!cert.startsAt || new Date(String(cert.startsAt)).getTime() <= now) &&
+        (!cert.endsAt || new Date(String(cert.endsAt)).getTime() >= now);
       return res.json({ valid: active, certificateNumber: cert.certificateNumber, countryIso2: cert.countryIso2,
         protectionKind: cert.protectionKind, issuerType: cert.issuerType, startsAt: cert.startsAt, endsAt: cert.endsAt });
     } catch (error) {
