@@ -54,3 +54,10 @@ test('Drizzle schema includes KAZI PROTECT tables and idempotency field', () => 
   ]) assert.match(drizzle, new RegExp(`export const ${table} = pgTable`));
   assert.match(drizzle, /idempotencyKey: text\('idempotency_key'\)/);
 });
+
+test('insurance claim workflow cannot decide coverage on behalf of insurer', () => {
+  assert.match(routes, /INSURER_DECISION_REQUIRED/);
+  assert.match(routes, /Insurance coverage decisions must be supplied by the authorized insurer/);
+  assert.match(routes, /FOR UPDATE OF cl/);
+  assert.match(routes, /CLAIM_STATUS_CHANGED/);
+});
