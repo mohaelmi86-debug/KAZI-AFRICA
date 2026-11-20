@@ -87,6 +87,8 @@ test('handover requires before/after evidence and client acceptance before warra
   assert.match(handover, /afterEvidenceRefs/);
   assert.match(handover, /HANDOVER_SUBMITTED/);
   assert.match(handover, /HANDOVER_ACCEPTED/);
+  assert.match(handover, /checklist\.every\(\(item\) => item\.completed\)/);
+  assert.match(handover, /client_reservations = '[]'::jsonb/);
   assert.match(handover, /RESERVATIONS_RECORDED/);
   assert.match(handover, /Only the booking client can respond/);
   assert.match(issuance, /status = 'ACCEPTED'/);
