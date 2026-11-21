@@ -1115,6 +1115,99 @@ app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_
 });
 
 
+
+app.get('/api/employment/candidates/me', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select().from(candidateProfiles)
+      .where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    const [profile] = await db.select({
+      fullName: profiles.fullName, email: profiles.email,
+      phone: profiles.phone, avatarUrl: profiles.avatarUrl,
+      countryIso2: profiles.countryIso2, cityName: profiles.cityName,
+    }).from(profiles).where(eq(profiles.id, ctx.profileId)).limit(1);
+    res.json({ candidate: candidate || null, profile: profile || null });
+  } catch (err) {
+    console.error('Candidate profile read error:', err);
+    res.status(500).json({ error: 'Unable to load candidate profile' });
+  }
+});
+
+app.patch('/api/employment/candidates/me', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const body = req.body || {};
+    const headline = String(body.headline || '').trim();
+    const summary = String(body.summary || '').trim();
+    const city = String(body.city || '').trim();
+    const skills = Array.isArray(body.skills)
+      ? [...new Set(body.skills.map((v: unknown) => String(v).trim()).filter(Boolean).map((v: string) => v.slice(0, 60)))].slice(0, 40)
+      : [];
+    const experienceYears = Number(body.experienceYears ?? 0);
+    const visibility = String(body.visibility || 'PRIVATE').toUpperCase();
+    if (headline.length > 160 || summary.length > 4000 || city.length > 120 ||
+        !Number.isInteger(experienceYears) || experienceYears < 0 || experienceYears > 60 ||
+        !['PRIVATE', 'EMPLOYERS_WITH_APPLICATION', 'PUBLIC'].includes(visibility)) {
+      return res.status(400).json({ error: 'Invalid candidate profile fields' });
+    }
+    const [profile] = await db.select().from(profiles).where(eq(profiles.id, ctx.profileId)).limit(1);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    const [saved] = await db.insert(candidateProfiles).values({
+      profileId: ctx.profileId, countryIso2: profile.countryIso2,
+      headline: headline || null, summary: summary || null, city: city || null,
+      skills, experienceYears, visibility, updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: candidateProfiles.profileId,
+      set: { headline: headline || null, summary: summary || null, city: city || null,
+        skills, experienceYears, visibility, updatedAt: new Date() },
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: profile.countryIso2, action: 'EMPLOYMENT_CANDIDATE_PROFILE_UPDATED',
+      entityType: 'candidate_profile', entityId: saved.id,
+      details: { visibility, skillsCount: skills.length, experienceYears },
+    });
+    res.json({ candidate: saved });
+  } catch (err) {
+    console.error('Candidate profile update error:', err);
+    res.status(500).json({ error: 'Unable to save candidate profile' });
+  }
+});
+
+app.get('/api/employment/employer/jobs', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const organizationId = String(req.query.organizationId || '');
+    if (!isValidUuid(organizationId)) return res.status(400).json({ error: 'Valid organizationId is required' });
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const jobs = await db.select({
+      id: jobPosts.id, referenceCode: jobPosts.referenceCode, title: jobPosts.title,
+      city: jobPosts.city, status: jobPosts.status, publishedAt: jobPosts.publishedAt,
+      createdAt: jobPosts.createdAt,
+    }).from(jobPosts).where(eq(jobPosts.organizationId, organizationId))
+      .orderBy(desc(jobPosts.createdAt));
+    const ids = jobs.map((j) => j.id);
+    const counts = ids.length ? await db.select({
+      jobPostId: jobApplications.jobPostId,
+      status: jobApplications.status,
+      count: sql<number>`count(*)::int`,
+    }).from(jobApplications).where(inArray(jobApplications.jobPostId, ids))
+      .groupBy(jobApplications.jobPostId, jobApplications.status) : [];
+    const byJob = new Map<string, Record<string, number>>();
+    for (const row of counts) {
+      const item = byJob.get(row.jobPostId) || {};
+      item[row.status] = Number(row.count);
+      byJob.set(row.jobPostId, item);
+    }
+    res.json({ jobs: jobs.map((job) => ({ ...job, applicationCounts: byJob.get(job.id) || {} })) });
+  } catch (err) {
+    console.error('Employer job list error:', err);
+    res.status(500).json({ error: 'Unable to load employer jobs' });
+  }
+});
+
 app.get('/api/employment/me/applications', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
