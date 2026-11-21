@@ -18,6 +18,11 @@ export const EmploymentModule: React.FC = () => {
   const [selectedJob, setSelectedJob] = useState<any>(null);
   const [coverLetter, setCoverLetter] = useState('');
   const [applications, setApplications] = useState<Application[]>([]);
+  const [candidateDocuments, setCandidateDocuments] = useState<any[]>([]);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [documentType, setDocumentType] = useState('CV');
+  const [documentBusy, setDocumentBusy] = useState(false);
+  const [documentShareTargets, setDocumentShareTargets] = useState<Record<string, string>>({});
   const [interviews, setInterviews] = useState<any[]>([]);
   const [interviewForm, setInterviewForm] = useState({ startsAt: '', endsAt: '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', mode: 'VIDEO', locationOrUrl: '' });
   const [organization, setOrganization] = useState<any>(null);
@@ -103,6 +108,53 @@ export const EmploymentModule: React.FC = () => {
       setNotice('Invitation à l’entretien envoyée au candidat.');
     } catch (e: any) { setError(e.message || 'Impossible de planifier cet entretien.'); }
     finally { setBusy(false); }
+  };
+
+  const loadCandidateDocuments = async () => {
+    try {
+      const result = await apiFetch<{ documents: any[] }>('/api/employment/candidates/me/documents');
+      setCandidateDocuments(result.documents || []);
+    } catch (e: any) { setError(e.message || 'Impossible de charger vos documents.'); }
+  };
+
+  const uploadCandidateDocument = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!documentFile) { setError('Sélectionnez un fichier PDF.'); return; }
+    if (documentFile.type !== 'application/pdf' || !documentFile.name.toLowerCase().endsWith('.pdf')) { setError('Seuls les fichiers PDF sont acceptés.'); return; }
+    if (documentFile.size > 8 * 1024 * 1024) { setError('La taille maximale est de 8 Mo.'); return; }
+    setDocumentBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch('/api/employment/candidates/me/documents?documentType=' + encodeURIComponent(documentType) + '&fileName=' + encodeURIComponent(documentFile.name), {
+        method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: documentFile,
+      });
+      setDocumentFile(null);
+      await loadCandidateDocuments();
+      setNotice('Document déposé en quarantaine. Il n’est pas accessible aux recruteurs avant analyse antivirus.');
+    } catch (e: any) { setError(e.message || 'Échec du dépôt sécurisé.'); }
+    finally { setDocumentBusy(false); }
+  };
+
+  const shareCandidateDocument = async (documentId: string) => {
+    const applicationId = documentShareTargets[documentId];
+    if (!applicationId) { setError('Choisissez la candidature concernée avant de donner votre consentement.'); return; }
+    setDocumentBusy(true); setError(''); setNotice('');
+    try {
+      const result = await apiFetch<{ message: string }>(`/api/employment/candidates/me/documents/${documentId}/share`, {
+        method: 'POST', body: JSON.stringify({ applicationId }),
+      });
+      setNotice(result.message);
+    } catch (e: any) { setError(e.message || 'Impossible d’enregistrer le consentement.'); }
+    finally { setDocumentBusy(false); }
+  };
+
+  const deleteCandidateDocument = async (documentId: string) => {
+    setDocumentBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch(`/api/employment/candidates/me/documents/${documentId}`, { method: 'DELETE' });
+      await loadCandidateDocuments();
+      setNotice('Document supprimé du stockage privé.');
+    } catch (e: any) { setError(e.message || 'Impossible de supprimer le document.'); }
+    finally { setDocumentBusy(false); }
   };
 
   const loadCandidate = async () => {
@@ -277,7 +329,7 @@ export const EmploymentModule: React.FC = () => {
           <button onClick={() => setView('jobs')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'jobs' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Offres</button>
           <button onClick={() => { setView('applications'); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'applications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes candidatures</button>
           <button onClick={() => { setView('interviews'); void loadInterviews(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'interviews' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes entretiens</button>
-          <button onClick={() => setView('profile')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
+          <button onClick={() => { setView('profile'); void loadCandidateDocuments(); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
           <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
           <button onClick={() => { setView('employerVerification'); void loadEmployerVerification(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'employerVerification' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Vérification entreprise</button>
           <button onClick={() => { setView('adminVerifications'); void loadAdminVerificationQueue(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'adminVerifications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Administration</button>
@@ -335,7 +387,19 @@ export const EmploymentModule: React.FC = () => {
         <textarea rows={6} maxLength={4000} value={candidate.summary} onChange={e => setCandidate({...candidate,summary:e.target.value})} placeholder="Présentez votre parcours et vos objectifs professionnels…" className="sm:col-span-2 rounded-lg border border-slate-300 px-3 py-2.5 text-sm" />
         <select value={candidate.visibility} onChange={e => setCandidate({...candidate,visibility:e.target.value})} className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm"><option value="PRIVATE">Profil privé</option><option value="EMPLOYERS_WITH_APPLICATION">Visible aux employeurs auxquels je candidate</option><option value="PUBLIC">Profil public</option></select>
         <button disabled={busy} type="submit" className="rounded-xl bg-[#087F70] text-white py-3 font-bold text-sm disabled:opacity-50">{busy ? 'Enregistrement…' : 'Enregistrer mon profil'}</button>
-      </form><p className="text-xs text-slate-500">Le CV et les justificatifs seront ajoutés dans une prochaine tranche avec stockage privé, contrôle de type de fichier et analyse antivirus. Aucun document n'est rendu public ici.</p></section>}
+      </form><p className="text-xs text-slate-500">Le CV et les justificatifs seront ajoutés dans une prochaine tranche avec stockage privé, contrôle de type de fichier et analyse antivirus. Aucun document n'est rendu public ici.</p><div className="border-t border-slate-200 pt-5 space-y-4">
+        <div><h3 className="font-bold text-base text-[#102D3A]">Mes CV et justificatifs</h3><p className="text-xs text-slate-500 mt-1">PDF uniquement · 8 Mo maximum · stockage privé et analyse antivirus requise avant tout accès recruteur.</p></div>
+        <form onSubmit={uploadCandidateDocument} className="grid sm:grid-cols-[1fr_1fr_auto] gap-2 items-end">
+          <label className="text-xs font-semibold text-slate-600">Type de document<select value={documentType} onChange={e => setDocumentType(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm"><option value="CV">CV</option><option value="CERTIFICATE">Certificat</option><option value="DIPLOMA">Diplôme</option><option value="OTHER">Autre justificatif</option></select></label>
+          <label className="text-xs font-semibold text-slate-600">Fichier PDF<input type="file" accept="application/pdf,.pdf" onChange={e => setDocumentFile(e.target.files?.[0] || null)} className="mt-1 block w-full text-xs file:mr-2 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2" /></label>
+          <button disabled={documentBusy || !documentFile} type="submit" className="rounded-lg bg-[#087F70] text-white px-4 py-2.5 text-xs font-bold disabled:opacity-50">{documentBusy ? 'Dépôt…' : 'Déposer en sécurité'}</button>
+        </form>
+        {candidateDocuments.length === 0 ? <p className="text-sm text-slate-500">Aucun document déposé.</p> : <div className="space-y-2">{candidateDocuments.map(document => <div key={document.id} className="rounded-xl border border-slate-200 p-3 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-bold text-slate-800">{document.originalFileName}</div><div className="text-xs text-slate-500">{document.documentType} · {(document.sizeBytes / 1024 / 1024).toFixed(2)} Mo · {new Date(document.uploadedAt).toLocaleDateString()}</div></div><span className="rounded-full bg-amber-50 text-amber-800 px-3 py-1 text-[10px] font-bold">{document.scanStatus === 'QUARANTINED' ? 'En quarantaine · antivirus en attente' : document.scanStatus}</span></div>
+          <div className="flex flex-wrap gap-2 items-center"><select value={documentShareTargets[document.id] || ''} onChange={e => setDocumentShareTargets({...documentShareTargets,[document.id]:e.target.value})} className="min-w-0 flex-1 rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="">Choisir une candidature pour consentement</option>{applications.map(app => <option key={app.id} value={app.id}>{app.jobTitle} · {app.organizationName}</option>)}</select><button disabled={documentBusy || !documentShareTargets[document.id]} onClick={() => void shareCandidateDocument(document.id)} className="rounded-lg border border-[#087F70] text-[#087F70] px-3 py-2 text-xs font-bold disabled:opacity-50">Autoriser le partage</button><button disabled={documentBusy} onClick={() => void deleteCandidateDocument(document.id)} className="rounded-lg border border-rose-200 text-rose-700 px-3 py-2 text-xs font-bold disabled:opacity-50">Supprimer</button></div>
+        </div>)}</div>}
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">Important : le dépôt et le consentement ne rendent pas le document visible. Tant qu’un antivirus réel n’a pas marqué le fichier « CLEAN », aucun recruteur ne peut le télécharger.</p>
+      </div></section>}
 
       {view === 'recruiter' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div className="flex items-center justify-between gap-2"><div><h2 className="font-bold text-lg text-[#102D3A]">Tableau de recrutement</h2><p className="text-sm text-slate-500">Offres et candidatures de votre organisation.</p></div><button onClick={() => void loadEmployerJobs()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>{employerJobs.length === 0 ? <p className="text-sm text-slate-500">Aucune offre pour cette entreprise.</p> : <div className="grid md:grid-cols-2 gap-3">{employerJobs.map(job => <button key={job.id} onClick={() => void loadJobApplications(job.id)} className={`text-left rounded-xl border p-4 ${selectedJobId === job.id ? 'border-[#087F70] bg-emerald-50' : 'border-slate-200'}`}><div className="font-bold text-sm">{job.title}</div><div className="text-xs text-slate-500 mt-1">{job.city} · {job.status} · {job.referenceCode}</div><div className="flex flex-wrap gap-2 mt-3">{Object.entries(job.applicationCounts || {}).map(([status,count]) => <span key={status} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{status}: {String(count)}</span>)}</div></button>)}</div>}
         {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}
