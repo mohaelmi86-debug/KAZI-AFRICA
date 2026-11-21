@@ -243,3 +243,15 @@ La migration doit être appliquée avant activation de ces endpoints en base. L'
 - Rechargement du pipeline après enregistrement afin de refléter les données persistées.
 
 Cette tranche complète le cycle entretien/évaluation côté recruteur. Elle ne remplace pas les tests d'intégration en base, ni l'application des migrations dans l'environnement cible.
+
+
+## 12. Tranche détail d'offre et candidature motivée
+
+- Interface de détail d'une offre accessible depuis les cartes de recherche, avec retour à la liste.
+- Affichage de la description complète, entreprise, localisation, type de contrat, mode de travail, rémunération, expérience, référence, date limite et compétences.
+- L'écran s'appuie sur `GET /api/employment/jobs/:id` : seules les offres publiées dans un pays actif avec le module emploi activé sont exposées.
+- Le formulaire de candidature accepte une lettre de motivation facultative (maximum 5 000 caractères), transmise à l'API existante et consultable dans le pipeline recruteur.
+- Les candidatures sont désactivées dans l'interface lorsque l'API indique que la date limite est dépassée.
+- Après envoi, le candidat est dirigé vers le suivi de ses candidatures.
+
+La fonctionnalité de CV et de pièces jointes reste séparée et doit utiliser un stockage privé sécurisé avant toute activation.
