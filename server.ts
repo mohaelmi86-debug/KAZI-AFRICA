@@ -1744,7 +1744,6 @@ app.get('/api/employment/jobs/:id/applications', requireAuth, async (req: AuthRe
       submittedAt: jobApplications.submittedAt, updatedAt: jobApplications.updatedAt,
       coverLetter: jobApplications.coverLetter,
       candidateProfileId: candidateProfiles.id,
-      contractType: job.contractType,
       headline: candidateProfiles.headline, summary: candidateProfiles.summary,
       city: candidateProfiles.city, countryIso2: candidateProfiles.countryIso2,
       skills: candidateProfiles.skills, experienceYears: candidateProfiles.experienceYears,
@@ -1754,7 +1753,7 @@ app.get('/api/employment/jobs/:id/applications', requireAuth, async (req: AuthRe
       .innerJoin(profiles, eq(candidateProfiles.profileId, profiles.id))
       .where(eq(jobApplications.jobPostId, job.id))
       .orderBy(desc(jobApplications.submittedAt));
-    res.json({ applications: rows });
+    res.json({ applications: rows.map((row) => ({ ...row, contractType: job.contractType })) });
   } catch (err) {
     console.error('Employer applications error:', err);
     res.status(500).json({ error: 'Unable to load applications' });
