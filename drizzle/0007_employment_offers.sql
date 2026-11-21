@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS employment_offers (
   CONSTRAINT employment_offers_application_version_unique UNIQUE (application_id, version)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS employment_offers_one_sent_per_application_idx
+  ON employment_offers(application_id) WHERE status = 'SENT';
+
 CREATE INDEX IF NOT EXISTS employment_offers_candidate_status_idx
   ON employment_offers(candidate_profile_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS employment_offers_org_status_idx
