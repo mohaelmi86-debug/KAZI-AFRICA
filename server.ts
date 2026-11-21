@@ -2207,6 +2207,31 @@ app.get('/api/employment/contract-templates', requireAuth, async (req: AuthReque
   }
 });
 
+app.get('/api/employment/organizations/:organizationId/contract-templates', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const organizationId = String(req.params.organizationId);
+    if (!isValidUuid(organizationId) || !(await canManageEmploymentOrg(organizationId, req.authCtx!.profileId, req.authCtx!.roles))) {
+      return res.status(404).json({ error: 'Organization not found or access denied' });
+    }
+    const [organization] = await db.select({ countryId: organizations.countryId })
+      .from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    if (!organization) return res.status(404).json({ error: 'Organization not found' });
+    const templates = await db.select({
+      id: employmentContractTemplates.id, countryId: employmentContractTemplates.countryId,
+      language: employmentContractTemplates.language, contractType: employmentContractTemplates.contractType,
+      version: employmentContractTemplates.version, title: employmentContractTemplates.title,
+      legalReviewReference: employmentContractTemplates.legalReviewReference,
+    }).from(employmentContractTemplates).where(and(
+      eq(employmentContractTemplates.countryId, organization.countryId),
+      eq(employmentContractTemplates.status, 'APPROVED')
+    )).orderBy(desc(employmentContractTemplates.updatedAt)).limit(100);
+    res.json({ templates });
+  } catch (err) {
+    console.error('List employer contract templates error:', err);
+    res.status(500).json({ error: 'Unable to list approved contract templates' });
+  }
+});
+
 app.post('/api/employment/applications/:id/contracts', requireAuth, rateLimit(5, 60_000), async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
