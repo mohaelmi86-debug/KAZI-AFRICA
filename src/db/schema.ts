@@ -696,21 +696,6 @@ export const candidateDocuments = pgTable(
   ]
 );
 
-export const candidateDocumentShares = pgTable(
-  'candidate_document_shares',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    documentId: uuid('document_id').references(() => candidateDocuments.id, { onDelete: 'cascade' }).notNull(),
-    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
-    consentedAt: timestamp('consented_at').defaultNow().notNull(),
-    revokedAt: timestamp('revoked_at'),
-  },
-  (table) => [
-    uniqueIndex('candidate_document_shares_document_application_unique_idx').on(table.documentId, table.applicationId),
-    index('candidate_document_shares_application_idx').on(table.applicationId),
-  ]
-);
-
 export const jobApplications = pgTable(
   'job_applications',
   {
@@ -726,6 +711,21 @@ export const jobApplications = pgTable(
     uniqueIndex('job_applications_job_candidate_unique_idx').on(table.jobPostId, table.candidateProfileId),
     index('job_applications_job_status_idx').on(table.jobPostId, table.status),
     index('job_applications_candidate_idx').on(table.candidateProfileId, table.submittedAt),
+  ]
+);
+
+export const candidateDocumentShares = pgTable(
+  'candidate_document_shares',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    documentId: uuid('document_id').references(() => candidateDocuments.id, { onDelete: 'cascade' }).notNull(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    consentedAt: timestamp('consented_at').defaultNow().notNull(),
+    revokedAt: timestamp('revoked_at'),
+  },
+  (table) => [
+    uniqueIndex('candidate_document_shares_document_application_unique_idx').on(table.documentId, table.applicationId),
+    index('candidate_document_shares_application_idx').on(table.applicationId),
   ]
 );
 
