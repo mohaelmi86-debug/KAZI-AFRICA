@@ -43,6 +43,7 @@ export const EmploymentModule: React.FC = () => {
   const [selectedJobId, setSelectedJobId] = useState('');
   const [jobApplications, setJobApplications] = useState<any[]>([]);
   const [employerInterviews, setEmployerInterviews] = useState<any[]>([]);
+  const [applicationDocuments, setApplicationDocuments] = useState<Record<string, any[]>>({});
   const [evaluationDrafts, setEvaluationDrafts] = useState<Record<string, { score: string; recommendation: string; strengths: string; concerns: string }>>({});
   const [form, setForm] = useState({ title: '', description: '', city: '', contractType: 'PERMANENT', workMode: 'ONSITE', salaryMin: '', salaryMax: '', department: '' });
 
@@ -234,6 +235,13 @@ export const EmploymentModule: React.FC = () => {
     try {
       const result = await apiFetch<{ applications: any[] }>(`/api/employment/jobs/${jobId}/applications`);
       setJobApplications(result.applications || []);
+      const docsEntries = await Promise.all((result.applications || []).map(async (app: any) => {
+        try {
+          const docs = await apiFetch<{ documents: any[] }>(`/api/employment/applications/${app.id}/documents`);
+          return [app.id, docs.documents || []] as const;
+        } catch { return [app.id, []] as const; }
+      }));
+      setApplicationDocuments(Object.fromEntries(docsEntries));
       const interviewResult = await apiFetch<{ interviews: any[] }>(`/api/employment/jobs/${jobId}/interviews`);
       setEmployerInterviews(interviewResult.interviews || []);
     } catch (e: any) { setError(e.message || 'Impossible de charger les candidatures.'); }
@@ -263,6 +271,17 @@ export const EmploymentModule: React.FC = () => {
       setNotice('Évaluation enregistrée dans le dossier de recrutement.');
     } catch (e: any) { setError(e.message || 'Impossible d’enregistrer l’évaluation.'); }
     finally { setBusy(false); }
+  };
+
+  const revokeCandidateDocumentShare = async (documentId: string) => {
+    const applicationId = documentShareTargets[documentId];
+    if (!applicationId) { setError('Choisissez la candidature pour laquelle révoquer le partage.'); return; }
+    setDocumentBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch(`/api/employment/candidates/me/documents/${documentId}/share/${applicationId}`, { method: 'DELETE' });
+      setNotice('Le consentement de partage a été révoqué.');
+    } catch (e: any) { setError(e.message || 'Impossible de révoquer le consentement.'); }
+    finally { setDocumentBusy(false); }
   };
 
   const withdrawApplication = async (applicationId: string) => {
@@ -396,13 +415,14 @@ export const EmploymentModule: React.FC = () => {
         </form>
         {candidateDocuments.length === 0 ? <p className="text-sm text-slate-500">Aucun document déposé.</p> : <div className="space-y-2">{candidateDocuments.map(document => <div key={document.id} className="rounded-xl border border-slate-200 p-3 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-bold text-slate-800">{document.originalFileName}</div><div className="text-xs text-slate-500">{document.documentType} · {(document.sizeBytes / 1024 / 1024).toFixed(2)} Mo · {new Date(document.uploadedAt).toLocaleDateString()}</div></div><span className="rounded-full bg-amber-50 text-amber-800 px-3 py-1 text-[10px] font-bold">{document.scanStatus === 'QUARANTINED' ? 'En quarantaine · antivirus en attente' : document.scanStatus}</span></div>
-          <div className="flex flex-wrap gap-2 items-center"><select value={documentShareTargets[document.id] || ''} onChange={e => setDocumentShareTargets({...documentShareTargets,[document.id]:e.target.value})} className="min-w-0 flex-1 rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="">Choisir une candidature pour consentement</option>{applications.map(app => <option key={app.id} value={app.id}>{app.jobTitle} · {app.organizationName}</option>)}</select><button disabled={documentBusy || !documentShareTargets[document.id]} onClick={() => void shareCandidateDocument(document.id)} className="rounded-lg border border-[#087F70] text-[#087F70] px-3 py-2 text-xs font-bold disabled:opacity-50">Autoriser le partage</button><button disabled={documentBusy} onClick={() => void deleteCandidateDocument(document.id)} className="rounded-lg border border-rose-200 text-rose-700 px-3 py-2 text-xs font-bold disabled:opacity-50">Supprimer</button></div>
+          <div className="flex flex-wrap gap-2 items-center"><select value={documentShareTargets[document.id] || ''} onChange={e => setDocumentShareTargets({...documentShareTargets,[document.id]:e.target.value})} className="min-w-0 flex-1 rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="">Choisir une candidature pour consentement</option>{applications.map(app => <option key={app.id} value={app.id}>{app.jobTitle} · {app.organizationName}</option>)}</select><button disabled={documentBusy || !documentShareTargets[document.id]} onClick={() => void shareCandidateDocument(document.id)} className="rounded-lg border border-[#087F70] text-[#087F70] px-3 py-2 text-xs font-bold disabled:opacity-50">Autoriser le partage</button><button disabled={documentBusy || !documentShareTargets[document.id]} onClick={() => void revokeCandidateDocumentShare(document.id)} className="rounded-lg border border-amber-300 text-amber-800 px-3 py-2 text-xs font-bold disabled:opacity-50">Révoquer</button><button disabled={documentBusy} onClick={() => void deleteCandidateDocument(document.id)} className="rounded-lg border border-rose-200 text-rose-700 px-3 py-2 text-xs font-bold disabled:opacity-50">Supprimer</button></div>
         </div>)}</div>}
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">Important : le dépôt et le consentement ne rendent pas le document visible. Tant qu’un antivirus réel n’a pas marqué le fichier « CLEAN », aucun recruteur ne peut le télécharger.</p>
       </div></section>}
 
       {view === 'recruiter' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div className="flex items-center justify-between gap-2"><div><h2 className="font-bold text-lg text-[#102D3A]">Tableau de recrutement</h2><p className="text-sm text-slate-500">Offres et candidatures de votre organisation.</p></div><button onClick={() => void loadEmployerJobs()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>{employerJobs.length === 0 ? <p className="text-sm text-slate-500">Aucune offre pour cette entreprise.</p> : <div className="grid md:grid-cols-2 gap-3">{employerJobs.map(job => <button key={job.id} onClick={() => void loadJobApplications(job.id)} className={`text-left rounded-xl border p-4 ${selectedJobId === job.id ? 'border-[#087F70] bg-emerald-50' : 'border-slate-200'}`}><div className="font-bold text-sm">{job.title}</div><div className="text-xs text-slate-500 mt-1">{job.city} · {job.status} · {job.referenceCode}</div><div className="flex flex-wrap gap-2 mt-3">{Object.entries(job.applicationCounts || {}).map(([status,count]) => <span key={status} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{status}: {String(count)}</span>)}</div></button>)}</div>}
         {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}
+                <div className="rounded-lg border border-slate-200 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Documents partagés par le candidat</div>{(applicationDocuments[app.id] || []).length === 0 ? <p className="text-xs text-slate-500">Aucun document partagé pour cette candidature.</p> : (applicationDocuments[app.id] || []).map((doc: any) => <div key={doc.id} className="flex flex-wrap items-center justify-between gap-2 text-xs"><span>{doc.originalFileName} · {doc.scanStatus}</span>{doc.downloadUrl ? <a href={doc.downloadUrl} target="_blank" rel="noreferrer" className="font-bold text-[#087F70] underline">Télécharger</a> : <span className="text-amber-700">Bloqué jusqu’à validation antivirus</span>}</div>)}</div>
                 <div className="rounded-lg border border-slate-200 p-3 space-y-3">
                   <div className="text-xs font-bold text-slate-700">Entretiens et évaluations</div>
                   {employerInterviews.filter(interview => interview.applicationId === app.id).length === 0
