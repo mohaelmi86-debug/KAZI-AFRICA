@@ -2046,7 +2046,7 @@ app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 
     const ctx = req.authCtx!;
     const applicationId = String(req.params.id);
     const nextStatus = String(req.body?.status || '').toUpperCase();
-    const allowed = ['REVIEWING', 'SHORTLISTED', 'INTERVIEW', 'OFFER', 'HIRED', 'REJECTED'];
+    const allowed = ['REVIEWING', 'SHORTLISTED', 'INTERVIEW', 'OFFER', 'REJECTED'];
     if (!isValidUuid(applicationId) || !allowed.includes(nextStatus)) {
       return res.status(400).json({ error: 'Invalid application ID or status' });
     }
@@ -2063,7 +2063,7 @@ app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 
       REVIEWING: ['SHORTLISTED', 'INTERVIEW', 'REJECTED'],
       SHORTLISTED: ['INTERVIEW', 'OFFER', 'REJECTED'],
       INTERVIEW: ['OFFER', 'REJECTED'],
-      OFFER: ['HIRED', 'REJECTED'],
+      OFFER: ['REJECTED'],
       HIRED: [], REJECTED: [], WITHDRAWN: [],
     };
     if (!(transitions[application.status] || []).includes(nextStatus)) {
