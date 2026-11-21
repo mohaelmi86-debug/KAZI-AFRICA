@@ -23,6 +23,10 @@ import {
   disputes,
   enrollments,
   evaluations,
+  jobPosts,
+  candidateProfiles,
+  jobApplications,
+  jobApplicationEvents,
   messages,
   missions,
   notifications,
@@ -895,6 +899,217 @@ app.put(
     }
   }
 );
+
+
+/* ============================================================================
+ * EMPLOYMENT OS — offres d'emploi et candidatures
+ * Le recrutement salarié reste séparé des missions de prestation.
+ * L'activation est contrôlée par pays via country_modules.module_key='employment'.
+ * ========================================================================== */
+async function isEmploymentEnabled(countryId: string): Promise<boolean> {
+  const [module] = await db.select({ enabled: countryModules.enabled })
+    .from(countryModules)
+    .where(and(
+      eq(countryModules.countryId, countryId),
+      eq(countryModules.moduleKey, 'employment')
+    ))
+    .limit(1);
+  return module?.enabled === true;
+}
+
+async function canManageEmploymentOrg(organizationId: string, profileId: string, roles: string[]) {
+  if (roles.includes('SUPER_ADMIN')) return true;
+  const [org] = await db.select().from(organizations)
+    .where(eq(organizations.id, organizationId)).limit(1);
+  if (!org) return false;
+  if (org.ownerProfileId === profileId) return true;
+  const [member] = await db.select().from(orgMembers).where(and(
+    eq(orgMembers.organizationId, organizationId),
+    eq(orgMembers.profileId, profileId),
+    eq(orgMembers.isActive, true)
+  )).limit(1);
+  return !!member && ['OWNER', 'MANAGER', 'HR_ADMIN', 'RECRUITER'].includes(member.memberRole);
+}
+
+app.get('/api/employment/jobs', rateLimit(90, 60_000), async (req, res) => {
+  try {
+    const countryIso2 = req.query.countryIso2 ? String(req.query.countryIso2).toUpperCase() : null;
+    const q = req.query.q ? String(req.query.q).trim().slice(0, 100) : '';
+    const rows = await db.select({
+      id: jobPosts.id,
+      referenceCode: jobPosts.referenceCode,
+      title: jobPosts.title,
+      description: jobPosts.description,
+      contractType: jobPosts.contractType,
+      workMode: jobPosts.workMode,
+      city: jobPosts.city,
+      salaryMin: jobPosts.salaryMin,
+      salaryMax: jobPosts.salaryMax,
+      salaryCurrency: jobPosts.salaryCurrency,
+      salaryPeriod: jobPosts.salaryPeriod,
+      experienceLevel: jobPosts.experienceLevel,
+      requiredSkills: jobPosts.requiredSkills,
+      applicationDeadline: jobPosts.applicationDeadline,
+      publishedAt: jobPosts.publishedAt,
+      organizationName: organizations.name,
+      countryIso2: countries.iso2,
+      countryName: countries.nameFr,
+    }).from(jobPosts)
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .innerJoin(countries, eq(jobPosts.countryId, countries.id))
+      .innerJoin(countryModules, and(
+        eq(countryModules.countryId, countries.id),
+        eq(countryModules.moduleKey, 'employment'),
+        eq(countryModules.enabled, true)
+      ))
+      .where(and(
+        eq(jobPosts.status, 'PUBLISHED'),
+        eq(countries.status, 'ACTIVE'),
+        countryIso2 ? eq(countries.iso2, countryIso2) : undefined,
+        q ? or(ilike(jobPosts.title, `%${q}%`), ilike(jobPosts.description, `%${q}%`), ilike(jobPosts.city, `%${q}%`)) : undefined
+      ))
+      .orderBy(desc(jobPosts.publishedAt))
+      .limit(100);
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+    res.json({ jobs: rows, total: rows.length });
+  } catch (err) {
+    console.error('Employment jobs search error:', err);
+    res.status(500).json({ error: 'Unable to load employment offers' });
+  }
+});
+
+app.post('/api/employment/jobs', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const body = req.body || {};
+    const organizationId = String(body.organizationId || '');
+    const title = String(body.title || '').trim();
+    const description = String(body.description || '').trim();
+    const city = String(body.city || '').trim();
+    const contractType = String(body.contractType || '').toUpperCase();
+    const allowedContracts = ['PERMANENT', 'FIXED_TERM', 'TEMPORARY', 'PART_TIME', 'INTERNSHIP', 'APPRENTICESHIP', 'SEASONAL', 'GRADUATE', 'PUBLIC_SERVICE'];
+    const workMode = String(body.workMode || 'ONSITE').toUpperCase();
+    if (!isValidUuid(organizationId) || title.length < 4 || title.length > 160 ||
+        description.length < 30 || description.length > 12000 || !city || city.length > 120 ||
+        !allowedContracts.includes(contractType) || !['ONSITE', 'HYBRID', 'REMOTE'].includes(workMode)) {
+      return res.status(400).json({ error: 'Invalid job details. Check title, description, location, contract and work mode.' });
+    }
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'You cannot publish offers for this organization' });
+    }
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    const [country] = await db.select().from(countries).where(eq(countries.id, org.countryId)).limit(1);
+    if (!country || country.status !== 'ACTIVE' || !(await isEmploymentEnabled(country.id))) {
+      return res.status(409).json({ error: 'Employment is not activated for this country' });
+    }
+    const salaryMin = body.salaryMin === '' || body.salaryMin == null ? null : Number(body.salaryMin);
+    const salaryMax = body.salaryMax === '' || body.salaryMax == null ? null : Number(body.salaryMax);
+    if ((salaryMin != null && (!Number.isFinite(salaryMin) || salaryMin < 0)) ||
+        (salaryMax != null && (!Number.isFinite(salaryMax) || salaryMax < 0)) ||
+        (salaryMin != null && salaryMax != null && salaryMax < salaryMin)) {
+      return res.status(400).json({ error: 'Invalid salary range' });
+    }
+    const [job] = await db.insert(jobPosts).values({
+      organizationId, countryId: country.id, createdByProfileId: ctx.profileId,
+      referenceCode: `JOB-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+      title, description, department: body.department ? String(body.department).slice(0, 120) : null,
+      contractType, workMode, city, salaryMin: salaryMin == null ? null : salaryMin.toFixed(2),
+      salaryMax: salaryMax == null ? null : salaryMax.toFixed(2),
+      salaryCurrency: country.defaultCurrency, salaryPeriod: ['HOUR','DAY','MONTH','YEAR'].includes(String(body.salaryPeriod).toUpperCase()) ? String(body.salaryPeriod).toUpperCase() : 'MONTH',
+      experienceLevel: body.experienceLevel ? String(body.experienceLevel).slice(0, 40) : null,
+      requiredSkills: Array.isArray(body.requiredSkills) ? body.requiredSkills.map((v: unknown) => String(v).trim().slice(0, 60)).filter(Boolean).slice(0, 30) : [],
+      applicationDeadline: body.applicationDeadline ? new Date(body.applicationDeadline) : null,
+      status: 'DRAFT',
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_JOB_CREATED',
+      entityType: 'job_post', entityId: job.id, details: { organizationId, status: 'DRAFT' }
+    });
+    res.status(201).json({ job });
+  } catch (err) {
+    console.error('Create employment job error:', err);
+    res.status(500).json({ error: 'Unable to create job offer' });
+  }
+});
+
+app.post('/api/employment/jobs/:id/publish', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job) return res.status(404).json({ error: 'Job offer not found' });
+    if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (job.status !== 'DRAFT' && job.status !== 'PAUSED') {
+      return res.status(409).json({ error: 'Only draft or paused offers can be published' });
+    }
+    const [country] = await db.select().from(countries).where(eq(countries.id, job.countryId)).limit(1);
+    if (!country || country.status !== 'ACTIVE' || !(await isEmploymentEnabled(job.countryId))) {
+      return res.status(409).json({ error: 'Employment is not activated for this country' });
+    }
+    if (job.applicationDeadline && job.applicationDeadline.getTime() <= Date.now()) {
+      return res.status(400).json({ error: 'Application deadline must be in the future' });
+    }
+    const [published] = await db.update(jobPosts).set({
+      status: 'PUBLISHED', publishedAt: new Date(), updatedAt: new Date()
+    }).where(eq(jobPosts.id, job.id)).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_JOB_PUBLISHED',
+      entityType: 'job_post', entityId: job.id, details: { status: 'PUBLISHED' }
+    });
+    res.json({ job: published });
+  } catch (err) {
+    console.error('Publish employment job error:', err);
+    res.status(500).json({ error: 'Unable to publish job offer' });
+  }
+});
+
+app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job || job.status !== 'PUBLISHED') return res.status(404).json({ error: 'Published job offer not found' });
+    if (job.applicationDeadline && job.applicationDeadline.getTime() < Date.now()) {
+      return res.status(409).json({ error: 'The application deadline has passed' });
+    }
+    const coverLetter = req.body?.coverLetter == null ? null : String(req.body.coverLetter).trim().slice(0, 5000);
+    const result = await db.transaction(async (tx) => {
+      const [candidate] = await tx.insert(candidateProfiles).values({
+        profileId: ctx.profileId, countryIso2: ctx.countryIso2, visibility: 'PRIVATE'
+      }).onConflictDoNothing().returning();
+      let candidateId = candidate?.id;
+      if (!candidateId) {
+        const [existing] = await tx.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+        candidateId = existing?.id;
+      }
+      if (!candidateId) throw new Error('Candidate profile could not be initialized');
+      const [application] = await tx.insert(jobApplications).values({
+        jobPostId: job.id, candidateProfileId: candidateId, coverLetter, status: 'SUBMITTED'
+      }).returning();
+      await tx.insert(jobApplicationEvents).values({
+        applicationId: application.id, actorProfileId: ctx.profileId,
+        fromStatus: null, toStatus: 'SUBMITTED', note: 'Application submitted'
+      });
+      return application;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: job.countryId ? ctx.countryIso2 : null, action: 'EMPLOYMENT_APPLICATION_SUBMITTED',
+      entityType: 'job_application', entityId: result.id, details: { jobPostId: job.id }
+    });
+    res.status(201).json({ application: result });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'You have already applied for this job' });
+    console.error('Submit employment application error:', err);
+    res.status(500).json({ error: 'Unable to submit application' });
+  }
+});
 
 app.get('/api/opportunities', async (req, res) => {
   try {
