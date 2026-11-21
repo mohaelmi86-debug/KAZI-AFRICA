@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // KAZI employment documents are uploaded and served only by the trusted server.
+    // Firebase Admin SDK bypasses client rules; application authorization remains mandatory.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
