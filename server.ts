@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import { and, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { createServer as createViteServer } from 'vite';
 import { getPrivateEmploymentBucket } from './src/lib/firebase-admin.ts';
+import { renderEmploymentContractDraftPdf } from './src/server/employmentContractPdf.ts';
 import { validateRuntimeEnvironment } from './src/config/env.ts';
 import { db } from './src/db/index.ts';
 import { ensureDatabaseSeeded } from './src/db/seed.ts';
@@ -2309,6 +2310,106 @@ app.post('/api/employment/applications/:id/contracts', requireAuth, rateLimit(5,
     if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'A contract already exists for this offer' });
     console.error('Create employment contract draft error:', err);
     res.status(500).json({ error: 'Unable to create employment contract draft' });
+  }
+});
+
+app.post('/api/employment/contracts/:id/generate-pdf', requireAuth, rateLimit(5, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const contractId = String(req.params.id);
+    if (!isValidUuid(contractId)) return res.status(400).json({ error: 'Invalid contract ID' });
+    const [contract] = await db.select().from(employmentContracts)
+      .where(eq(employmentContracts.id, contractId)).limit(1);
+    if (!contract) return res.status(404).json({ error: 'Contract not found' });
+    if (!(await canManageEmploymentOrg(contract.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Only authorized employer members can generate a contract draft PDF' });
+    }
+    if (contract.status !== 'DRAFT') return res.status(409).json({ error: 'Only draft contracts can be rendered' });
+    if (contract.documentStoragePath) return res.status(409).json({ error: 'A draft PDF already exists; create a new contract version to replace it' });
+    const terms = contract.termsSnapshot as Record<string, any>;
+    let pdf: Buffer;
+    try {
+      pdf = renderEmploymentContractDraftPdf(terms);
+    } catch (renderError: any) {
+      return res.status(422).json({ error: renderError?.message || 'Contract template cannot be rendered' });
+    }
+    const sha256 = crypto.createHash('sha256').update(pdf).digest('hex');
+    const documentVersion = 1;
+    const storagePath = `employment-contracts/${String(terms.country?.iso2 || 'XX').toUpperCase()}/${contract.id}/draft-v${documentVersion}.pdf`;
+    const bucket = getPrivateEmploymentBucket();
+    const file = bucket.file(storagePath);
+    await file.save(pdf, {
+      resumable: false,
+      validation: 'crc32c',
+      metadata: {
+        contentType: 'application/pdf',
+        cacheControl: 'private, no-store, max-age=0',
+        metadata: { sha256, contractId: contract.id, documentVersion: String(documentVersion), classification: 'confidential-employment-contract' },
+      },
+    });
+    const generatedAt = new Date();
+    const [updated] = await db.update(employmentContracts).set({
+      documentStoragePath: storagePath, documentSha256: sha256,
+      documentSizeBytes: pdf.length, documentGeneratedAt: generatedAt,
+      documentVersion, updatedAt: generatedAt,
+    }).where(and(eq(employmentContracts.id, contract.id), isNull(employmentContracts.documentStoragePath))).returning();
+    if (!updated) {
+      await file.delete({ ignoreNotFound: true }).catch(() => undefined);
+      return res.status(409).json({ error: 'Contract PDF was generated concurrently; reload the contract' });
+    }
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: String(terms.country?.iso2 || '').toUpperCase() || null,
+      action: 'EMPLOYMENT_CONTRACT_DRAFT_PDF_GENERATED',
+      entityType: 'employment_contract', entityId: contract.id,
+      details: { sha256, sizeBytes: pdf.length, documentVersion, storagePath },
+    });
+    res.status(201).json({
+      contractId: contract.id, status: updated.status, documentVersion,
+      sha256, sizeBytes: pdf.length, generatedAt: generatedAt.toISOString(),
+      downloadEndpoint: `/api/employment/contracts/${contract.id}/document`,
+      signatureStatus: 'NOT_SIGNED',
+    });
+  } catch (err) {
+    console.error('Generate employment contract PDF error:', err);
+    res.status(500).json({ error: 'Unable to generate contract draft PDF' });
+  }
+});
+
+app.get('/api/employment/contracts/:id/document', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const contractId = String(req.params.id);
+    if (!isValidUuid(contractId)) return res.status(400).json({ error: 'Invalid contract ID' });
+    const [contract] = await db.select().from(employmentContracts)
+      .where(eq(employmentContracts.id, contractId)).limit(1);
+    if (!contract || !contract.documentStoragePath || !contract.documentSha256) {
+      return res.status(404).json({ error: 'Contract document not found' });
+    }
+    const [candidate] = await db.select({ id: candidateProfiles.id }).from(candidateProfiles)
+      .where(and(eq(candidateProfiles.id, contract.candidateProfileId), eq(candidateProfiles.profileId, ctx.profileId))).limit(1);
+    const isEmployerMember = await canManageEmploymentOrg(contract.organizationId, ctx.profileId, ctx.roles);
+    if (!candidate && !isEmployerMember) return res.status(404).json({ error: 'Contract document not found' });
+    const [pdf] = await getPrivateEmploymentBucket().file(contract.documentStoragePath).download();
+    const actualSha256 = crypto.createHash('sha256').update(pdf).digest('hex');
+    if (actualSha256 !== contract.documentSha256 || pdf.length !== contract.documentSizeBytes) {
+      await db.insert(auditLogs).values({
+        actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+        action: 'EMPLOYMENT_CONTRACT_DOCUMENT_INTEGRITY_FAILURE',
+        entityType: 'employment_contract', entityId: contract.id,
+        details: { expectedSha256: contract.documentSha256, actualSha256, expectedSize: contract.documentSizeBytes, actualSize: pdf.length },
+      }).catch((auditError) => console.error('Contract integrity audit failed:', auditError));
+      return res.status(409).json({ error: 'Contract document integrity check failed; access blocked' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', String(pdf.length));
+    res.setHeader('Content-Disposition', `attachment; filename="kazi-contract-${contract.id}-v${contract.documentVersion}.pdf"`);
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(pdf);
+  } catch (err) {
+    console.error('Download employment contract PDF error:', err);
+    res.status(500).json({ error: 'Unable to retrieve contract document' });
   }
 });
 
