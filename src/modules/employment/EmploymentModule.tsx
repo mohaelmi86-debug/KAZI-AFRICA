@@ -38,6 +38,9 @@ export const EmploymentModule: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
+  const [cityFilter, setCityFilter] = useState('');
+  const [contractFilter, setContractFilter] = useState('');
+  const [workModeFilter, setWorkModeFilter] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter' | 'employerVerification' | 'adminVerifications'>('jobs');
@@ -55,6 +58,9 @@ export const EmploymentModule: React.FC = () => {
     try {
       const qs = new URLSearchParams({ countryIso2: selectedCountryIso2 });
       if (query.trim()) qs.set('q', query.trim());
+      if (cityFilter.trim()) qs.set('city', cityFilter.trim());
+      if (contractFilter) qs.set('contractType', contractFilter);
+      if (workModeFilter) qs.set('workMode', workModeFilter);
       const result = await apiFetch<{ jobs: Job[] }>(`/api/employment/jobs?${qs.toString()}`);
       setJobs(result.jobs || []);
     } catch (e: any) { setError(e.message || 'Impossible de charger les offres.'); }
@@ -380,9 +386,24 @@ export const EmploymentModule: React.FC = () => {
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
 
       {view === 'jobs' && <>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="flex-1 relative"><Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" /><input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && void loadJobs()} placeholder="Métier, compétence ou ville" className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-10 pr-3 text-sm" /></div>
-          <button onClick={() => void loadJobs()} className="rounded-xl bg-[#087F70] text-white px-5 py-2.5 text-sm font-bold inline-flex items-center justify-center gap-2"><Search className="w-4 h-4" /> Rechercher</button>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 space-y-3">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
+            <div className="relative sm:col-span-2 lg:col-span-1"><Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" /><input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && void loadJobs()} placeholder="Métier, compétence ou mot-clé" className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-10 pr-3 text-sm" /></div>
+            <input value={cityFilter} onChange={e => setCityFilter(e.target.value)} onKeyDown={e => e.key === 'Enter' && void loadJobs()} placeholder="Ville (ex. Abidjan)" className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm" />
+            <select value={contractFilter} onChange={e => setContractFilter(e.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="">Tous les contrats</option><option value="PERMANENT">CDI / Permanent</option><option value="FIXED_TERM">CDD / Durée déterminée</option><option value="TEMPORARY">Intérim / Temporaire</option><option value="PART_TIME">Temps partiel</option><option value="INTERNSHIP">Stage</option><option value="APPRENTICESHIP">Apprentissage</option><option value="SEASONAL">Saisonnier</option><option value="GRADUATE">Jeune diplômé</option><option value="PUBLIC_SERVICE">Fonction publique</option>
+            </select>
+            <select value={workModeFilter} onChange={e => setWorkModeFilter(e.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="">Tous les modes</option><option value="ONSITE">Sur site</option><option value="HYBRID">Hybride</option><option value="REMOTE">À distance</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-slate-500">Les offres expirées sont automatiquement masquées.</p>
+            <div className="flex gap-2">
+              <button onClick={() => { setQuery(''); setCityFilter(''); setContractFilter(''); setWorkModeFilter(''); }} className="rounded-xl border border-slate-300 text-slate-600 px-4 py-2.5 text-sm font-semibold">Réinitialiser</button>
+              <button onClick={() => void loadJobs()} className="rounded-xl bg-[#087F70] text-white px-5 py-2.5 text-sm font-bold inline-flex items-center justify-center gap-2"><Search className="w-4 h-4" /> Rechercher</button>
+            </div>
+          </div>
         </div>
         {loading ? <div className="p-10 text-center text-sm text-slate-500">Chargement des offres…</div> : jobs.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"><BriefcaseBusiness className="w-8 h-8 mx-auto text-slate-400 mb-3" /><p className="font-semibold text-slate-700">Aucune offre publiée pour ce pays</p><p className="text-sm text-slate-500 mt-1">Les offres apparaîtront dès que le module Emploi sera activé et que les entreprises publieront leurs annonces.</p></div> :
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">{jobs.map(job => <article key={job.id} className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col gap-4">
