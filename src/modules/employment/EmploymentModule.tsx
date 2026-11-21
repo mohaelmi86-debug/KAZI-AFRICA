@@ -152,6 +152,36 @@ export const EmploymentModule: React.FC = () => {
     finally { setBusy(false); }
   };
 
+  const generateEmploymentContractPdf = async (contractId: string) => {
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await apiFetch<{ sha256: string; sizeBytes: number; signatureStatus: string }>(`/api/employment/contracts/${contractId}/generate-pdf`, { method: 'POST', body: JSON.stringify({}) });
+      await loadEmployerContractWorkspace();
+      setNotice(`PDF brouillon généré et archivé en stockage privé. Empreinte SHA-256 : ${result.sha256}. Statut : non signé.`);
+    } catch (e: any) { setError(e.message || 'Impossible de générer le PDF du contrat.'); }
+    finally { setBusy(false); }
+  };
+
+  const downloadEmploymentContractPdf = async (contractId: string) => {
+    if (!firebaseUser) { setError('Connectez-vous pour consulter ce document.'); return; }
+    setBusy(true); setError('');
+    try {
+      const token = await firebaseUser.getIdToken();
+      const response = await fetch(`/api/employment/contracts/${contractId}/document`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || 'Téléchargement du contrat impossible.');
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl; link.download = `kazi-contrat-${contractId}.pdf`;
+      document.body.appendChild(link); link.click(); link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e: any) { setError(e.message || 'Impossible de télécharger le contrat.'); }
+    finally { setBusy(false); }
+  };
+
   const loadEmploymentContracts = async () => {
     try { const result = await apiFetch<{ contracts: any[] }>('/api/employment/me/contracts'); setEmploymentContracts(result.contracts || []); }
     catch (e: any) { setError(e.message || 'Impossible de charger vos contrats.'); }
@@ -594,6 +624,7 @@ export const EmploymentModule: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-bold text-sm text-[#102D3A]">{template.title || offer.jobTitle || 'Contrat de travail'}</h3><p className="text-xs text-slate-500">{contract.organizationName} · {contract.countryName} · {contract.language?.toUpperCase()}</p></div><span className="rounded-full bg-amber-50 text-amber-800 px-3 py-1 text-xs font-bold">{contract.status}</span></div>
             <div className="grid sm:grid-cols-2 gap-2 text-xs text-slate-600"><div>Poste : <strong>{offer.jobTitle || '—'}</strong></div><div>Type : <strong>{offer.contractType || '—'}</strong></div><div>Rémunération : <strong>{offer.salaryAmount || '—'} {offer.salaryCurrency || ''} ({offer.salaryBasis === 'NET' ? 'net' : 'brut'})</strong></div><div>Début prévu : <strong>{offer.startDate || '—'}</strong></div><div>Employeur : <strong>{terms.employer?.legalName || contract.organizationName}</strong></div><div>Modèle : <strong>{template.version ? 'v' + template.version : '—'}</strong></div></div>
             <p className="text-[11px] text-amber-800 bg-amber-50 rounded-lg p-3">Brouillon de travail : ce document n’est pas signé et aucune signature électronique n’a été enregistrée.</p>
+            {contract.documentStoragePath && <button disabled={busy} onClick={() => void downloadEmploymentContractPdf(contract.id)} className="rounded-lg border border-[#087F70] text-[#087F70] px-3 py-2 text-xs font-bold disabled:opacity-50">Télécharger le PDF sécurisé</button>}
           </article>;
         })}</div>}
       </section>}
@@ -644,7 +675,7 @@ export const EmploymentModule: React.FC = () => {
 
       {view === 'recruiter' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div className="flex items-center justify-between gap-2"><div><h2 className="font-bold text-lg text-[#102D3A]">Tableau de recrutement</h2><p className="text-sm text-slate-500">Offres et candidatures de votre organisation.</p></div><button onClick={() => void loadEmployerJobs()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>{employerJobs.length === 0 ? <p className="text-sm text-slate-500">Aucune offre pour cette entreprise.</p> : <div className="grid md:grid-cols-2 gap-3">{employerJobs.map(job => <button key={job.id} onClick={() => void loadJobApplications(job.id)} className={`text-left rounded-xl border p-4 ${selectedJobId === job.id ? 'border-[#087F70] bg-emerald-50' : 'border-slate-200'}`}><div className="font-bold text-sm">{job.title}</div><div className="text-xs text-slate-500 mt-1">{job.city} · {job.status} · {job.referenceCode}</div><div className="flex flex-wrap gap-2 mt-3">{Object.entries(job.applicationCounts || {}).map(([status,count]) => <span key={status} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{status}: {String(count)}</span>)}</div></button>)}</div>}
         <div className="border-t border-slate-200 pt-4 space-y-3"><div className="flex items-center justify-between gap-2"><h3 className="font-bold text-sm">Contrats de l’entreprise ({employerContracts.length})</h3><button onClick={() => void loadEmployerContractWorkspace()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>
-          {employerContracts.length === 0 ? <p className="text-xs text-slate-500">Aucun brouillon de contrat. Les modèles disponibles dépendent de la validation juridique du pays.</p> : <div className="space-y-2">{employerContracts.map(contract => <div key={contract.id} className="rounded-lg border border-slate-200 p-3 flex flex-wrap justify-between gap-2"><div><div className="text-xs font-bold text-[#102D3A]">{contract.termsSnapshot?.offer?.jobTitle || 'Contrat de travail'}</div><div className="text-[11px] text-slate-500">{contract.termsSnapshot?.candidate?.fullName || 'Candidat'} · {contract.language?.toUpperCase()} · v{contract.templateVersion}</div></div><span className="h-fit rounded-full bg-amber-50 text-amber-800 px-2 py-1 text-[10px] font-bold">{contract.status}</span></div>)}</div>}
+          {employerContracts.length === 0 ? <p className="text-xs text-slate-500">Aucun brouillon de contrat. Les modèles disponibles dépendent de la validation juridique du pays.</p> : <div className="space-y-2">{employerContracts.map(contract => <div key={contract.id} className="rounded-lg border border-slate-200 p-3 flex flex-wrap justify-between gap-2"><div><div className="text-xs font-bold text-[#102D3A]">{contract.termsSnapshot?.offer?.jobTitle || 'Contrat de travail'}</div><div className="text-[11px] text-slate-500">{contract.termsSnapshot?.candidate?.fullName || 'Candidat'} · {contract.language?.toUpperCase()} · v{contract.templateVersion}</div></div><div className="flex items-center gap-2"><span className="h-fit rounded-full bg-amber-50 text-amber-800 px-2 py-1 text-[10px] font-bold">{contract.status}</span>{contract.documentStoragePath ? <button disabled={busy} onClick={() => void downloadEmploymentContractPdf(contract.id)} className="text-[10px] font-bold text-[#087F70] disabled:opacity-50">PDF</button> : contract.status === 'DRAFT' ? <button disabled={busy} onClick={() => void generateEmploymentContractPdf(contract.id)} className="text-[10px] font-bold text-[#087F70] disabled:opacity-50">Générer PDF</button> : null}</div></div>)}</div>}
           {approvedContractTemplates.length === 0 && <p className="text-[11px] text-amber-800 bg-amber-50 rounded-lg p-3">Aucun modèle juridiquement approuvé n’est disponible pour le pays de cette entreprise. Contactez l’administrateur local après validation par un juriste du pays.</p>}
         </div>
         {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}
