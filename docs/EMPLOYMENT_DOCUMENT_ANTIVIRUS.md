@@ -51,7 +51,7 @@ Préparation sur le serveur :
 
 1. Installer Docker Engine et le plugin Docker Compose.
 2. Créer un fichier `.env` non versionné avec les variables PostgreSQL nécessaires au worker (`SQL_HOST`, `SQL_USER`, `SQL_PASSWORD`, `SQL_DB_NAME`). `SQL_HOST` doit être joignable depuis le réseau Docker.
-3. Créer `secrets/firebase-service-account.json` à partir d'un compte de service dédié. Lui accorder uniquement les droits nécessaires au bucket Firebase privé ; ne jamais committer ce fichier.
+3. Créer `secrets/firebase-service-account.json` à partir d'un compte de service dédié. Lui accorder uniquement les droits nécessaires au bucket Firebase privé ; ne jamais committer ce fichier. Vérifier que l'utilisateur hôte correspondant à l'UID 1000 peut le lire, puis appliquer `chmod 0400 secrets/firebase-service-account.json`.
 4. Vérifier que `firebase-applet-config.json` cible bien le projet Firebase attendu et que le bucket est celui de production/préproduction voulu.
 5. Lancer : `docker compose -f compose.employment-scanner.yml up -d --build`.
 6. Contrôler les logs : `docker compose -f compose.employment-scanner.yml logs -f employment-document-worker clamav`.
