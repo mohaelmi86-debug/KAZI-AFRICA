@@ -1475,6 +1475,49 @@ app.patch('/api/employment/interviews/:id/response', requireAuth, rateLimit(20, 
   }
 });
 
+app.get('/api/employment/jobs/:id/interviews', requireAuth, rateLimit(60, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job) return res.status(404).json({ error: 'Job offer not found' });
+    if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const interviews = await db.select({
+      interview: jobInterviews,
+      applicationId: jobApplications.id,
+      candidateName: profiles.fullName,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .leftJoin(candidateProfiles, eq(jobApplications.candidateProfileId, candidateProfiles.id))
+      .leftJoin(profiles, eq(candidateProfiles.profileId, profiles.id))
+      .where(eq(jobApplications.jobPostId, jobId))
+      .orderBy(desc(jobInterviews.startsAt));
+    const interviewIds = interviews.map(row => row.interview.id);
+    const evaluations = interviewIds.length
+      ? await db.select().from(jobInterviewEvaluations)
+          .where(inArray(jobInterviewEvaluations.interviewId, interviewIds))
+          .orderBy(desc(jobInterviewEvaluations.updatedAt))
+      : [];
+    res.json({
+      interviews: interviews.map(row => ({
+        ...row.interview,
+        applicationId: row.applicationId,
+        candidateName: row.candidateName || 'Candidat',
+        evaluations: evaluations.filter(evaluation => evaluation.interviewId === row.interview.id),
+        myEvaluation: evaluations.find(evaluation =>
+          evaluation.interviewId === row.interview.id && evaluation.reviewerProfileId === ctx.profileId
+        ) || null,
+      })),
+    });
+  } catch (err) {
+    console.error('Employer interviews error:', err);
+    res.status(500).json({ error: 'Unable to load employer interviews' });
+  }
+});
+
 app.post('/api/employment/interviews/:id/evaluation', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
