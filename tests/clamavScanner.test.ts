@@ -18,10 +18,11 @@ async function withFakeClamAv(reply: string | null, run: (config: { host: string
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
   try {
-    await run({ host: '127.0.0.1', port: address.port, timeoutMs: 100 });
+    await run({ host: '127.0.0.1', port: address.port, timeoutMs: 1000 });
   } finally {
-    server.close();
-    await once(server, 'close');
+    const closed = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    server.closeAllConnections();
+    await closed;
   }
 }
 
