@@ -675,6 +675,42 @@ export const candidateProfiles = pgTable(
   (table) => [index('candidate_profiles_country_idx').on(table.countryIso2)]
 );
 
+export const candidateDocuments = pgTable(
+  'candidate_documents',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'cascade' }).notNull(),
+    documentType: text('document_type').notNull(), // CV | CERTIFICATE | DIPLOMA | OTHER
+    originalFileName: text('original_file_name').notNull(),
+    storagePath: text('storage_path').notNull().unique(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    sha256: text('sha256').notNull(),
+    scanStatus: text('scan_status').notNull().default('QUARANTINED'), // QUARANTINED | SCANNING | CLEAN | REJECTED | DELETED
+    uploadedAt: timestamp('uploaded_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('candidate_documents_candidate_uploaded_idx').on(table.candidateProfileId, table.uploadedAt),
+    index('candidate_documents_scan_status_idx').on(table.scanStatus),
+  ]
+);
+
+export const candidateDocumentShares = pgTable(
+  'candidate_document_shares',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    documentId: uuid('document_id').references(() => candidateDocuments.id, { onDelete: 'cascade' }).notNull(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    consentedAt: timestamp('consented_at').defaultNow().notNull(),
+    revokedAt: timestamp('revoked_at'),
+  },
+  (table) => [
+    uniqueIndex('candidate_document_shares_document_application_unique_idx').on(table.documentId, table.applicationId),
+    index('candidate_document_shares_application_idx').on(table.applicationId),
+  ]
+);
+
 export const jobApplications = pgTable(
   'job_applications',
   {
