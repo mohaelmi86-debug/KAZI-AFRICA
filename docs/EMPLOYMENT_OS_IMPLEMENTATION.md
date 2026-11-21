@@ -255,3 +255,15 @@ Cette tranche complète le cycle entretien/évaluation côté recruteur. Elle ne
 - Après envoi, le candidat est dirigé vers le suivi de ses candidatures.
 
 La fonctionnalité de CV et de pièces jointes reste séparée et doit utiliser un stockage privé sécurisé avant toute activation.
+
+
+### Tranche — vérification des entreprises (mise en place)
+
+- Table dédiée `employer_verifications` avec statut, identité légale, numéro d'immatriculation, contact, horodatage et décision du réviseur.
+- Une entreprise autorisée peut déposer ou actualiser son dossier et consulter son état.
+- File de vérification réservée aux administrateurs plateforme et administrateurs locaux limités à leurs pays.
+- Décision d'administration : validation, refus ou demande d'informations complémentaires ; chaque décision est auditée.
+- **Blocage serveur :** une offre ne peut pas être publiée tant que l'entreprise n'a pas le statut `VERIFIED`. La création de brouillons reste possible.
+- Migration : `drizzle/0003_employer_verifications.sql`.
+
+Limites : cette tranche collecte les informations déclaratives mais ne vérifie pas automatiquement les registres nationaux et ne gère pas encore le téléversement des justificatifs. La vérification humaine des pièces via un canal sécurisé reste nécessaire ; ne pas considérer une entreprise comme vérifiée sur la seule base de sa déclaration.
