@@ -27,6 +27,8 @@ import {
   candidateProfiles,
   jobApplications,
   jobApplicationEvents,
+  jobInterviews,
+  jobInterviewEvaluations,
   messages,
   missions,
   notifications,
@@ -1346,6 +1348,171 @@ app.post('/api/employment/applications/:id/withdraw', requireAuth, rateLimit(20,
     if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
     console.error('Withdraw employment application error:', err);
     res.status(500).json({ error: 'Unable to withdraw application' });
+  }
+});
+
+app.post('/api/employment/applications/:id/interviews', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [application] = await db.select().from(jobApplications).where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (!['SUBMITTED', 'REVIEWING', 'SHORTLISTED', 'INTERVIEW'].includes(application.status)) {
+      return res.status(409).json({ error: 'An interview cannot be scheduled at this application stage' });
+    }
+    const startsAt = new Date(req.body?.startsAt);
+    const endsAt = new Date(req.body?.endsAt);
+    const timezone = String(req.body?.timezone || '').trim();
+    const mode = String(req.body?.mode || '').toUpperCase();
+    const locationOrUrl = req.body?.locationOrUrl == null ? null : String(req.body.locationOrUrl).trim().slice(0, 500);
+    const internalNotes = req.body?.internalNotes == null ? null : String(req.body.internalNotes).trim().slice(0, 2000);
+    if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) ||
+        endsAt.getTime() <= startsAt.getTime() || startsAt.getTime() < Date.now() - 60_000 ||
+        !timezone || timezone.length > 80 || !['VIDEO', 'PHONE', 'ONSITE'].includes(mode) ||
+        (mode !== 'PHONE' && !locationOrUrl)) {
+      return res.status(400).json({ error: 'Invalid interview schedule' });
+    }
+    try { new Intl.DateTimeFormat('en', { timeZone: timezone }); }
+    catch { return res.status(400).json({ error: 'Invalid IANA timezone' }); }
+    const interview = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(jobInterviews).values({
+        applicationId, scheduledByProfileId: ctx.profileId, startsAt, endsAt,
+        timezone, mode, locationOrUrl, internalNotes, status: 'SCHEDULED',
+      }).returning();
+      if (application.status !== 'INTERVIEW') {
+        const [updated] = await tx.update(jobApplications)
+          .set({ status: 'INTERVIEW', updatedAt: new Date() })
+          .where(and(eq(jobApplications.id, application.id), eq(jobApplications.status, application.status)))
+          .returning();
+        if (!updated) throw new Error('Application status changed concurrently; reload and retry');
+        await tx.insert(jobApplicationEvents).values({
+          applicationId: application.id, actorProfileId: ctx.profileId,
+          fromStatus: application.status, toStatus: 'INTERVIEW', note: 'Interview scheduled',
+        });
+      }
+      return created;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_INTERVIEW_SCHEDULED', entityType: 'job_interview',
+      entityId: interview.id, details: { applicationId, mode, startsAt: startsAt.toISOString() },
+    });
+    res.status(201).json({ interview });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
+    console.error('Schedule employment interview error:', err);
+    res.status(500).json({ error: 'Unable to schedule interview' });
+  }
+});
+
+app.get('/api/employment/me/interviews', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ interviews: [] });
+    const interviews = await db.select({
+      id: jobInterviews.id, startsAt: jobInterviews.startsAt, endsAt: jobInterviews.endsAt,
+      timezone: jobInterviews.timezone, mode: jobInterviews.mode,
+      locationOrUrl: jobInterviews.locationOrUrl, candidateResponse: jobInterviews.candidateResponse,
+      status: jobInterviews.status, candidateMessage: jobInterviews.candidateMessage,
+      jobTitle: jobPosts.title, organizationName: organizations.name, applicationId: jobApplications.id,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .where(eq(jobApplications.candidateProfileId, candidate.id))
+      .orderBy(desc(jobInterviews.startsAt));
+    res.json({ interviews });
+  } catch (err) {
+    console.error('Candidate interviews error:', err);
+    res.status(500).json({ error: 'Unable to load interviews' });
+  }
+});
+
+app.patch('/api/employment/interviews/:id/response', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const interviewId = String(req.params.id);
+    const response = String(req.body?.response || '').toUpperCase();
+    const message = req.body?.message == null ? null : String(req.body.message).trim().slice(0, 1000);
+    if (!isValidUuid(interviewId) || !['CONFIRMED', 'DECLINED'].includes(response)) {
+      return res.status(400).json({ error: 'Invalid interview response' });
+    }
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Interview not found' });
+    const [interview] = await db.select({
+      interview: jobInterviews, applicationId: jobApplications.id,
+      candidateProfileId: jobApplications.candidateProfileId,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .where(eq(jobInterviews.id, interviewId)).limit(1);
+    if (!interview || interview.candidateProfileId !== candidate.id) return res.status(404).json({ error: 'Interview not found' });
+    if (interview.interview.status !== 'SCHEDULED' || interview.interview.startsAt.getTime() < Date.now()) {
+      return res.status(409).json({ error: 'This interview can no longer be answered' });
+    }
+    const [updated] = await db.update(jobInterviews).set({
+      candidateResponse: response, candidateMessage: message, updatedAt: new Date(),
+    }).where(and(
+      eq(jobInterviews.id, interviewId), eq(jobInterviews.status, 'SCHEDULED')
+    )).returning();
+    if (!updated) return res.status(409).json({ error: 'Interview was updated concurrently' });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_INTERVIEW_RESPONSE', entityType: 'job_interview',
+      entityId: interviewId, details: { response },
+    });
+    res.json({ interview: updated });
+  } catch (err) {
+    console.error('Interview response error:', err);
+    res.status(500).json({ error: 'Unable to save interview response' });
+  }
+});
+
+app.post('/api/employment/interviews/:id/evaluation', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const interviewId = String(req.params.id);
+    const score = Number(req.body?.score);
+    const recommendation = String(req.body?.recommendation || '').toUpperCase();
+    const strengths = String(req.body?.strengths || '').trim().slice(0, 3000);
+    const concerns = String(req.body?.concerns || '').trim().slice(0, 3000);
+    if (!isValidUuid(interviewId) || !Number.isInteger(score) || score < 1 || score > 5 ||
+        !['STRONG_YES', 'YES', 'HOLD', 'NO'].includes(recommendation)) {
+      return res.status(400).json({ error: 'Invalid interview evaluation' });
+    }
+    const [interview] = await db.select({
+      interview: jobInterviews, organizationId: jobPosts.organizationId,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobInterviews.id, interviewId)).limit(1);
+    if (!interview) return res.status(404).json({ error: 'Interview not found' });
+    if (!(await canManageEmploymentOrg(interview.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const [evaluation] = await db.insert(jobInterviewEvaluations).values({
+      interviewId, reviewerProfileId: ctx.profileId, score, recommendation, strengths, concerns,
+      updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: [jobInterviewEvaluations.interviewId, jobInterviewEvaluations.reviewerProfileId],
+      set: { score, recommendation, strengths, concerns, updatedAt: new Date() },
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_INTERVIEW_EVALUATED', entityType: 'job_interview',
+      entityId: interviewId, details: { score, recommendation },
+    });
+    res.json({ evaluation });
+  } catch (err) {
+    console.error('Interview evaluation error:', err);
+    res.status(500).json({ error: 'Unable to save interview evaluation' });
   }
 });
 
