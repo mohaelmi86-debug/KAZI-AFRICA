@@ -209,3 +209,13 @@ La migration doit être appliquée à l'environnement cible avant utilisation. L
 - Les données de contact du candidat ne sont pas ajoutées au retour de l'API pipeline.
 
 **Limite documentaire importante :** le dépôt de CV n'est pas encore activé. Il ne faut pas stocker un CV dans un champ texte ni exposer un fichier par URL publique. La prochaine tranche doit mettre en place un bucket privé, contrôle MIME/taille, checksum, antivirus, URLs signées temporaires et consentement candidat avant accès employeur.
+
+## 9. Tranche complémentaire — détail d'offre et retrait de candidature
+
+- API publique `GET /api/employment/jobs/:id` : renvoie uniquement les offres publiées d'un pays actif où le module employment est activé ; aucune donnée privée employeur/candidat n'est exposée.
+- L'API signale explicitement `acceptingApplications=false` lorsque la date limite est dépassée.
+- API candidat `POST /api/employment/applications/:id/withdraw` : vérifie que la candidature appartient au candidat connecté, refuse les retraits après OFFER/HIRED/REJECTED ou retrait antérieur, applique une mise à jour conditionnelle contre les courses concurrentes, crée un événement d'historique et un audit.
+- Interface candidat : action « Retirer » disponible uniquement pour les statuts SUBMITTED, REVIEWING, SHORTLISTED et INTERVIEW.
+
+Ces routes sont ajoutées au périmètre livré de la PR. Le détail d'offre est disponible via API ; l'écran dédié et la navigation depuis la carte restent à intégrer.
+
