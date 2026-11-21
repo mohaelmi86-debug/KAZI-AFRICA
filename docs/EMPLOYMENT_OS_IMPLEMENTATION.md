@@ -303,10 +303,10 @@ Cette référence ne remplace pas la pièce justificative : elle assure la traç
 - Règles Firebase Storage fournies dans `storage.rules` : accès direct client refusé en lecture et écriture.
 
 ### Limites de sécurité à ne pas masquer
-- **Aucun fournisseur antivirus n'est actuellement configuré.** Les fichiers restent donc en quarantaine et ne peuvent pas être téléchargés par les recruteurs. Il n'existe aucun mécanisme de validation manuelle ou automatique permettant de contourner cet état.
-- L'analyse antivirus doit être branchée via un worker serveur dédié, avec résultat signé/fiable, timeout, reprise et passage à `CLEAN` uniquement après analyse réussie. Les fichiers infectés ou non analysables devront être `REJECTED`.
+- **Le worker ClamAV privé est désormais livré** (`scripts/scan-employment-documents.ts`, commande `bun run employment:scan-documents`). Il vérifie la taille réelle, la signature PDF et le SHA-256, puis n'autorise `CLEAN` qu'après un verdict positif explicite du daemon `clamd`.
+- **Aucun daemon ClamAV n'est encore configuré ou exécuté.** Tant que `CLAMAV_HOST` et l'ordonnanceur ne sont pas configurés, les fichiers restent en quarantaine et ne peuvent pas être téléchargés par les recruteurs. Les erreurs et timeouts remettent le document en quarantaine ; les fichiers infectés sont rejetés.
 - Le bucket Firebase, les identifiants ADC/IAM du serveur et le déploiement effectif de `storage.rules` doivent être vérifiés dans l'environnement cible. La présence du fichier de règles dans Git ne signifie pas qu'il est déjà déployé.
 - Les migrations SQL `0005_candidate_documents_quarantine.sql` doivent être appliquées à la base cible avant activation des routes.
 - Les tests d'intégration de stockage, de permissions IAM, de révocation et d'isolation multi-tenant restent à exécuter sur un environnement configuré.
 
-**État :** API et interface de dépôt/consentement implémentées ; stockage effectif dépendant de la configuration Firebase Admin/IAM ; antivirus non configuré ; aucun document n'est accessible aux recruteurs tant que le statut n'est pas `CLEAN`.
+**État :** API, interface de dépôt/consentement et worker ClamAV livrés ; stockage effectif dépendant de Firebase Admin/IAM ; daemon antivirus et ordonnanceur non configurés ; aucun document n'est accessible aux recruteurs tant que le statut n'est pas `CLEAN`.
