@@ -29,6 +29,8 @@ export const EmploymentModule: React.FC = () => {
   const [employerJobs, setEmployerJobs] = useState<any[]>([]);
   const [selectedJobId, setSelectedJobId] = useState('');
   const [jobApplications, setJobApplications] = useState<any[]>([]);
+  const [employerInterviews, setEmployerInterviews] = useState<any[]>([]);
+  const [evaluationDrafts, setEvaluationDrafts] = useState<Record<string, { score: string; recommendation: string; strengths: string; concerns: string }>>({});
   const [form, setForm] = useState({ title: '', description: '', city: '', contractType: 'PERMANENT', workMode: 'ONSITE', salaryMin: '', salaryMax: '', department: '' });
 
   const loadJobs = async () => {
@@ -129,6 +131,8 @@ export const EmploymentModule: React.FC = () => {
     try {
       const result = await apiFetch<{ applications: any[] }>(`/api/employment/jobs/${jobId}/applications`);
       setJobApplications(result.applications || []);
+      const interviewResult = await apiFetch<{ interviews: any[] }>(`/api/employment/jobs/${jobId}/interviews`);
+      setEmployerInterviews(interviewResult.interviews || []);
     } catch (e: any) { setError(e.message || 'Impossible de charger les candidatures.'); }
   };
 
@@ -139,6 +143,23 @@ export const EmploymentModule: React.FC = () => {
       await loadEmployerJobs();
       setNotice('Le statut de la candidature a été actualisé.');
     } catch (e: any) { setError(e.message || 'Impossible de modifier le statut.'); }
+  };
+
+  const saveInterviewEvaluation = async (interviewId: string) => {
+    const draft = evaluationDrafts[interviewId] || { score: '3', recommendation: 'HOLD', strengths: '', concerns: '' };
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch(`/api/employment/interviews/${interviewId}/evaluation`, {
+        method: 'POST',
+        body: JSON.stringify({
+          score: Number(draft.score), recommendation: draft.recommendation,
+          strengths: draft.strengths, concerns: draft.concerns,
+        }),
+      });
+      if (selectedJobId) await loadJobApplications(selectedJobId);
+      setNotice('Évaluation enregistrée dans le dossier de recrutement.');
+    } catch (e: any) { setError(e.message || 'Impossible d’enregistrer l’évaluation.'); }
+    finally { setBusy(false); }
   };
 
   const withdrawApplication = async (applicationId: string) => {
@@ -225,7 +246,34 @@ export const EmploymentModule: React.FC = () => {
       </form><p className="text-xs text-slate-500">Le CV et les justificatifs seront ajoutés dans une prochaine tranche avec stockage privé, contrôle de type de fichier et analyse antivirus. Aucun document n'est rendu public ici.</p></section>}
 
       {view === 'recruiter' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div className="flex items-center justify-between gap-2"><div><h2 className="font-bold text-lg text-[#102D3A]">Tableau de recrutement</h2><p className="text-sm text-slate-500">Offres et candidatures de votre organisation.</p></div><button onClick={() => void loadEmployerJobs()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>{employerJobs.length === 0 ? <p className="text-sm text-slate-500">Aucune offre pour cette entreprise.</p> : <div className="grid md:grid-cols-2 gap-3">{employerJobs.map(job => <button key={job.id} onClick={() => void loadJobApplications(job.id)} className={`text-left rounded-xl border p-4 ${selectedJobId === job.id ? 'border-[#087F70] bg-emerald-50' : 'border-slate-200'}`}><div className="font-bold text-sm">{job.title}</div><div className="text-xs text-slate-500 mt-1">{job.city} · {job.status} · {job.referenceCode}</div><div className="flex flex-wrap gap-2 mt-3">{Object.entries(job.applicationCounts || {}).map(([status,count]) => <span key={status} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{status}: {String(count)}</span>)}</div></button>)}</div>}
-        {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}<div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div><div className="flex flex-wrap gap-2">{(app.status === 'SUBMITTED' ? ['REVIEWING','REJECTED'] : app.status === 'REVIEWING' ? ['SHORTLISTED','INTERVIEW','REJECTED'] : app.status === 'SHORTLISTED' ? ['INTERVIEW','OFFER','REJECTED'] : app.status === 'INTERVIEW' ? ['OFFER','REJECTED'] : app.status === 'OFFER' ? ['HIRED','REJECTED'] : []).map(next => <button key={next} onClick={() => void changeApplicationStatus(app.id,next)} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">{next === 'REVIEWING' ? 'Examiner' : next === 'SHORTLISTED' ? 'Présélectionner' : next === 'INTERVIEW' ? 'Entretien' : next === 'OFFER' ? 'Proposer embauche' : next === 'HIRED' ? 'Recruté' : 'Refuser'}</button>)}</div></article>)}</div>}
+        {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}
+                <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+                  <div className="text-xs font-bold text-slate-700">Entretiens et évaluations</div>
+                  {employerInterviews.filter(interview => interview.applicationId === app.id).length === 0
+                    ? <p className="text-xs text-slate-500">Aucun entretien planifié pour ce candidat.</p>
+                    : employerInterviews.filter(interview => interview.applicationId === app.id).map(interview => {
+                      const draft = evaluationDrafts[interview.id] || {
+                        score: String(interview.myEvaluation?.score || 3),
+                        recommendation: interview.myEvaluation?.recommendation || 'HOLD',
+                        strengths: interview.myEvaluation?.strengths || '',
+                        concerns: interview.myEvaluation?.concerns || '',
+                      };
+                      return <div key={interview.id} className="rounded-lg bg-slate-50 p-3 space-y-2">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div><div className="text-xs font-bold">{new Date(interview.startsAt).toLocaleString()} · {interview.timezone}</div><div className="text-[11px] text-slate-500">{interview.mode} · {interview.candidateResponse} · {interview.status}</div></div>
+                          <span className="text-[10px] text-slate-500">{interview.evaluations?.length || 0} évaluation(s)</span>
+                        </div>
+                        {interview.evaluations?.length > 0 && <div className="space-y-1">{interview.evaluations.map((evaluation: any) => <div key={evaluation.id} className="text-[11px] text-slate-600 border-t border-slate-200 pt-1">Évaluateur · {evaluation.score}/5 · {evaluation.recommendation.replaceAll('_',' ')}{evaluation.strengths ? <div>Points forts : {evaluation.strengths}</div> : null}{evaluation.concerns ? <div>Réserves : {evaluation.concerns}</div> : null}</div>)}</div>}
+                        <div className="grid sm:grid-cols-2 gap-2">
+                          <label className="text-[11px] text-slate-600">Note / 5<select value={draft.score} onChange={e => setEvaluationDrafts({...evaluationDrafts,[interview.id]:{...draft,score:e.target.value}})} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="1">1 — Insuffisant</option><option value="2">2 — Faible</option><option value="3">3 — Correct</option><option value="4">4 — Très bien</option><option value="5">5 — Excellent</option></select></label>
+                          <label className="text-[11px] text-slate-600">Recommandation<select value={draft.recommendation} onChange={e => setEvaluationDrafts({...evaluationDrafts,[interview.id]:{...draft,recommendation:e.target.value}})} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="STRONG_YES">Très favorable</option><option value="YES">Favorable</option><option value="HOLD">À revoir</option><option value="NO">Défavorable</option></select></label>
+                          <textarea value={draft.strengths} onChange={e => setEvaluationDrafts({...evaluationDrafts,[interview.id]:{...draft,strengths:e.target.value}})} maxLength={3000} rows={2} placeholder="Points forts observés" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" />
+                          <textarea value={draft.concerns} onChange={e => setEvaluationDrafts({...evaluationDrafts,[interview.id]:{...draft,concerns:e.target.value}})} maxLength={3000} rows={2} placeholder="Réserves / points à approfondir" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" />
+                        </div>
+                        <button disabled={busy} onClick={() => void saveInterviewEvaluation(interview.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">{interview.myEvaluation ? 'Mettre à jour mon évaluation' : 'Enregistrer mon évaluation'}</button>
+                      </div>;
+                    })}
+                </div><div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div><div className="flex flex-wrap gap-2">{(app.status === 'SUBMITTED' ? ['REVIEWING','REJECTED'] : app.status === 'REVIEWING' ? ['SHORTLISTED','INTERVIEW','REJECTED'] : app.status === 'SHORTLISTED' ? ['INTERVIEW','OFFER','REJECTED'] : app.status === 'INTERVIEW' ? ['OFFER','REJECTED'] : app.status === 'OFFER' ? ['HIRED','REJECTED'] : []).map(next => <button key={next} onClick={() => void changeApplicationStatus(app.id,next)} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">{next === 'REVIEWING' ? 'Examiner' : next === 'SHORTLISTED' ? 'Présélectionner' : next === 'INTERVIEW' ? 'Entretien' : next === 'OFFER' ? 'Proposer embauche' : next === 'HIRED' ? 'Recruté' : 'Refuser'}</button>)}</div></article>)}</div>}
       </section>}
 
       {view === 'publish' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div><h2 className="font-bold text-lg text-[#102D3A]">Publier une offre d’emploi</h2><p className="text-sm text-slate-500 mt-1">{organization ? `Entreprise : ${organization.name}` : 'Un espace entreprise est requis pour publier.'}</p></div>{!organization ? <a href="/enterprise" className="inline-flex rounded-lg bg-[#087F70] text-white px-4 py-2.5 text-sm font-bold">Créer mon espace entreprise</a> : <form onSubmit={publish} className="grid sm:grid-cols-2 gap-3">
