@@ -100,6 +100,52 @@ function isPgUniqueViolation(err: any): boolean {
   return err?.code === '23505' || err?.cause?.code === '23505';
 }
 
+type EmploymentNotificationContent = {
+  type: string;
+  eventKey: string;
+  titleFr: string; titleEn: string; titleAr: string; titlePt: string;
+  bodyFr: string; bodyEn: string; bodyAr: string; bodyPt: string;
+};
+
+async function sendEmploymentNotification(profileId: string, content: EmploymentNotificationContent): Promise<void> {
+  try {
+    await db.insert(notifications).values({
+      profileId,
+      type: content.type,
+      eventKey: `${content.eventKey}:${profileId}`,
+      titleFr: content.titleFr, titleEn: content.titleEn, titleAr: content.titleAr, titlePt: content.titlePt,
+      bodyFr: content.bodyFr, bodyEn: content.bodyEn, bodyAr: content.bodyAr, bodyPt: content.bodyPt,
+    }).onConflictDoNothing({ target: notifications.eventKey });
+  } catch (err) {
+    console.error('Employment notification delivery failed:', err);
+  }
+}
+
+async function notifyEmploymentOrganization(organizationId: string, content: EmploymentNotificationContent): Promise<void> {
+  try {
+    const [organization] = await db.select({ ownerProfileId: organizations.ownerProfileId })
+      .from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    if (!organization) return;
+    const members = await db.select({ profileId: orgMembers.profileId })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.organizationId, organizationId), eq(orgMembers.isActive, true)));
+    const recipients = [...new Set([organization.ownerProfileId, ...members.map((member) => member.profileId)])];
+    await Promise.all(recipients.map((profileId) => sendEmploymentNotification(profileId, content)));
+  } catch (err) {
+    console.error('Employment organization notification failed:', err);
+  }
+}
+
+async function notifyEmploymentCandidate(candidateProfileId: string, content: EmploymentNotificationContent): Promise<void> {
+  try {
+    const [candidate] = await db.select({ profileId: candidateProfiles.profileId })
+      .from(candidateProfiles).where(eq(candidateProfiles.id, candidateProfileId)).limit(1);
+    if (candidate) await sendEmploymentNotification(candidate.profileId, content);
+  } catch (err) {
+    console.error('Employment candidate notification failed:', err);
+  }
+}
+
 const webhookReplayCache = new Map<string, number>();
 const WEBHOOK_REPLAY_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_CACHEABLE_GET_PATHS = new Set([
@@ -1282,6 +1328,14 @@ app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_
       countryIso2: jobCountry.iso2, action: 'EMPLOYMENT_APPLICATION_SUBMITTED',
       entityType: 'job_application', entityId: result.id, details: { jobPostId: job.id }
     });
+    await notifyEmploymentOrganization(job.organizationId, {
+      type: 'EMPLOYMENT_APPLICATION_SUBMITTED', eventKey: `employment:application-submitted:${result.id}`,
+      titleFr: 'Nouvelle candidature', titleEn: 'New job application', titleAr: 'طلب توظيف جديد', titlePt: 'Nova candidatura',
+      bodyFr: `Une nouvelle candidature a été reçue pour « ${job.title} ».`,
+      bodyEn: `A new application was received for “${job.title}”.`,
+      bodyAr: `تم استلام طلب جديد للوظيفة « ${job.title} ».`,
+      bodyPt: `Foi recebida uma nova candidatura para « ${job.title} ».`,
+    });
     res.status(201).json({ application: result });
   } catch (err: any) {
     if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'You have already applied for this job' });
@@ -1740,6 +1794,16 @@ app.post('/api/employment/applications/:id/withdraw', requireAuth, rateLimit(20,
       action: 'EMPLOYMENT_APPLICATION_WITHDRAWN', entityType: 'job_application',
       entityId: application.id, details: { jobPostId: application.jobPostId },
     });
+    const [withdrawnJob] = await db.select({ organizationId: jobPosts.organizationId, title: jobPosts.title })
+      .from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (withdrawnJob) await notifyEmploymentOrganization(withdrawnJob.organizationId, {
+      type: 'EMPLOYMENT_APPLICATION_WITHDRAWN', eventKey: `employment:application-withdrawn:${application.id}`,
+      titleFr: 'Candidature retirée', titleEn: 'Application withdrawn', titleAr: 'تم سحب طلب التوظيف', titlePt: 'Candidatura retirada',
+      bodyFr: `Un candidat a retiré sa candidature pour « ${withdrawnJob.title} ».`,
+      bodyEn: `A candidate withdrew their application for “${withdrawnJob.title}”.`,
+      bodyAr: `قام أحد المرشحين بسحب طلبه للوظيفة « ${withdrawnJob.title} ».`,
+      bodyPt: `Um candidato retirou a candidatura para « ${withdrawnJob.title} ».`,
+    });
     res.json({ application: updated });
   } catch (err: any) {
     if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
@@ -1798,6 +1862,14 @@ app.post('/api/employment/applications/:id/interviews', requireAuth, rateLimit(2
       actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
       action: 'EMPLOYMENT_INTERVIEW_SCHEDULED', entityType: 'job_interview',
       entityId: interview.id, details: { applicationId, mode, startsAt: startsAt.toISOString() },
+    });
+    await notifyEmploymentCandidate(application.candidateProfileId, {
+      type: 'EMPLOYMENT_INTERVIEW_SCHEDULED', eventKey: `employment:interview-scheduled:${interview.id}`,
+      titleFr: 'Invitation à un entretien', titleEn: 'Interview invitation', titleAr: 'دعوة لإجراء مقابلة', titlePt: 'Convite para entrevista',
+      bodyFr: `Un entretien est planifié pour « ${job.title} » le ${startsAt.toLocaleString('fr-FR', { timeZone: timezone })}.`,
+      bodyEn: `An interview for “${job.title}” is scheduled on ${startsAt.toLocaleString('en-GB', { timeZone: timezone })}.`,
+      bodyAr: `تم تحديد موعد مقابلة للوظيفة « ${job.title} » في ${startsAt.toLocaleString('en-GB', { timeZone: timezone })}.`,
+      bodyPt: `Uma entrevista para « ${job.title} » foi marcada para ${startsAt.toLocaleString('pt-PT', { timeZone: timezone })}.`,
     });
     res.status(201).json({ interview });
   } catch (err: any) {
@@ -1864,6 +1936,19 @@ app.patch('/api/employment/interviews/:id/response', requireAuth, rateLimit(20, 
       actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
       action: 'EMPLOYMENT_INTERVIEW_RESPONSE', entityType: 'job_interview',
       entityId: interviewId, details: { response },
+    });
+    const [interviewContext] = await db.select({
+      organizationId: jobPosts.organizationId, jobTitle: jobPosts.title,
+    }).from(jobApplications)
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobApplications.id, interview.applicationId)).limit(1);
+    if (interviewContext) await notifyEmploymentOrganization(interviewContext.organizationId, {
+      type: 'EMPLOYMENT_INTERVIEW_RESPONSE', eventKey: `employment:interview-response:${interviewId}:${response}`,
+      titleFr: 'Réponse à une invitation', titleEn: 'Interview invitation response', titleAr: 'الرد على دعوة المقابلة', titlePt: 'Resposta ao convite de entrevista',
+      bodyFr: `Le candidat a ${response === 'CONFIRMED' ? 'confirmé' : 'refusé'} l’entretien pour « ${interviewContext.jobTitle} ».`,
+      bodyEn: `The candidate has ${response === 'CONFIRMED' ? 'confirmed' : 'declined'} the interview for “${interviewContext.jobTitle}”.`,
+      bodyAr: `قام المرشح ${response === 'CONFIRMED' ? 'بتأكيد' : 'برفض'} المقابلة للوظيفة « ${interviewContext.jobTitle} ».`,
+      bodyPt: `O candidato ${response === 'CONFIRMED' ? 'confirmou' : 'recusou'} a entrevista para « ${interviewContext.jobTitle} ».`,
     });
     res.json({ interview: updated });
   } catch (err) {
@@ -2001,6 +2086,14 @@ app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 
       actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
       action: 'EMPLOYMENT_APPLICATION_STATUS_CHANGED', entityType: 'job_application',
       entityId: application.id, details: { jobPostId: job.id, from: application.status, to: nextStatus },
+    });
+    await notifyEmploymentCandidate(application.candidateProfileId, {
+      type: 'EMPLOYMENT_APPLICATION_STATUS_CHANGED', eventKey: `employment:application-status:${application.id}:${nextStatus}`,
+      titleFr: 'Mise à jour de candidature', titleEn: 'Application status updated', titleAr: 'تحديث حالة طلب التوظيف', titlePt: 'Estado da candidatura atualizado',
+      bodyFr: `Votre candidature pour « ${job.title} » est passée à l’étape « ${nextStatus} ».`,
+      bodyEn: `Your application for “${job.title}” moved to “${nextStatus}”.`,
+      bodyAr: `تم تحديث طلبك للوظيفة « ${job.title} » إلى « ${nextStatus} ».`,
+      bodyPt: `A sua candidatura para « ${job.title} » passou para « ${nextStatus} ».`,
     });
     res.json({ application: updated });
   } catch (err: any) {
@@ -3330,18 +3423,29 @@ app.post('/api/messages', requireAuth, async (req: AuthRequest, res) => {
 app.get('/api/notifications', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
-    const rows = ctx.roles.includes('SUPER_ADMIN')
-      ? await db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(20)
-      : await db
-          .select()
-          .from(notifications)
-          .where(eq(notifications.profileId, ctx.profileId))
-          .orderBy(desc(notifications.createdAt))
-          .limit(20);
+    const rows = await db.select().from(notifications)
+      .where(eq(notifications.profileId, ctx.profileId))
+      .orderBy(desc(notifications.createdAt)).limit(50);
     res.json({ notifications: rows });
   } catch (err) {
     console.error('Notifications error:', err);
     res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+app.patch('/api/notifications/:id/read', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const id = String(req.params.id);
+    if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid notification ID' });
+    const [updated] = await db.update(notifications).set({ isRead: true })
+      .where(and(eq(notifications.id, id), eq(notifications.profileId, ctx.profileId)))
+      .returning({ id: notifications.id, isRead: notifications.isRead });
+    if (!updated) return res.status(404).json({ error: 'Notification not found' });
+    res.json({ notification: updated });
+  } catch (err) {
+    console.error('Mark notification read error:', err);
+    res.status(500).json({ error: 'Failed to update notification' });
   }
 });
 
