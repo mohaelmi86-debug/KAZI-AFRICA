@@ -24,12 +24,15 @@ export const EmploymentModule: React.FC = () => {
   const [employerVerification, setEmployerVerification] = useState<any>(null);
   const [verificationForm, setVerificationForm] = useState({ legalName: '', registrationNumber: '', contactName: '', contactEmail: '' });
   const [verificationLoading, setVerificationLoading] = useState(false);
+  const [adminVerifications, setAdminVerifications] = useState<any[]>([]);
+  const [adminReviewDrafts, setAdminReviewDrafts] = useState<Record<string, { note: string; evidenceReference: string }>>({});
+  const [adminQueueLoading, setAdminQueueLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter' | 'employerVerification'>('jobs');
+  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter' | 'employerVerification' | 'adminVerifications'>('jobs');
   const [candidate, setCandidate] = useState({ headline: '', summary: '', city: '', skillsText: '', experienceYears: '0', visibility: 'PRIVATE' });
   const [employerJobs, setEmployerJobs] = useState<any[]>([]);
   const [selectedJobId, setSelectedJobId] = useState('');
@@ -120,6 +123,27 @@ export const EmploymentModule: React.FC = () => {
       }) });
       setNotice('Votre profil professionnel a été enregistré.');
     } catch (e: any) { setError(e.message || 'Impossible d’enregistrer le profil.'); }
+    finally { setBusy(false); }
+  };
+
+  const loadAdminVerificationQueue = async () => {
+    setAdminQueueLoading(true); setError('');
+    try {
+      const result = await apiFetch<{ verifications: any[] }>('/api/employment/admin/employer-verifications');
+      setAdminVerifications(result.verifications || []);
+    } catch (e: any) { setError(e.message || 'Accès réservé aux administrateurs habilités.'); }
+    finally { setAdminQueueLoading(false); }
+  };
+
+  const reviewEmployerVerification = async (id: string, action: 'VERIFY' | 'REJECT' | 'REQUEST_INFO') => {
+    const draft = adminReviewDrafts[id] || { note: '', evidenceReference: '' };
+    if (action === 'VERIFY' && draft.evidenceReference.trim().length < 5) { setError('Une référence de preuve officielle (5 caractères minimum) est obligatoire pour valider.'); return; }
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch(`/api/employment/admin/employer-verifications/${id}`, { method: 'PATCH', body: JSON.stringify({ action, note: draft.note, evidenceReference: draft.evidenceReference }) });
+      await loadAdminVerificationQueue();
+      setNotice(action === 'VERIFY' ? 'Entreprise vérifiée.' : action === 'REJECT' ? 'Dossier refusé.' : 'Informations complémentaires demandées.');
+    } catch (e: any) { setError(e.message || 'Impossible d’enregistrer la décision.'); }
     finally { setBusy(false); }
   };
 
@@ -256,6 +280,7 @@ export const EmploymentModule: React.FC = () => {
           <button onClick={() => setView('profile')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
           <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
           <button onClick={() => { setView('employerVerification'); void loadEmployerVerification(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'employerVerification' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Vérification entreprise</button>
+          <button onClick={() => { setView('adminVerifications'); void loadAdminVerificationQueue(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'adminVerifications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Administration</button>
           <button onClick={() => setView('publish')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'publish' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Publier une offre</button>
         </div>
       </header>
@@ -343,6 +368,19 @@ export const EmploymentModule: React.FC = () => {
                 </div><div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div><div className="flex flex-wrap gap-2">{(app.status === 'SUBMITTED' ? ['REVIEWING','REJECTED'] : app.status === 'REVIEWING' ? ['SHORTLISTED','INTERVIEW','REJECTED'] : app.status === 'SHORTLISTED' ? ['INTERVIEW','OFFER','REJECTED'] : app.status === 'INTERVIEW' ? ['OFFER','REJECTED'] : app.status === 'OFFER' ? ['HIRED','REJECTED'] : []).map(next => <button key={next} onClick={() => void changeApplicationStatus(app.id,next)} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">{next === 'REVIEWING' ? 'Examiner' : next === 'SHORTLISTED' ? 'Présélectionner' : next === 'INTERVIEW' ? 'Entretien' : next === 'OFFER' ? 'Proposer embauche' : next === 'HIRED' ? 'Recruté' : 'Refuser'}</button>)}</div></article>)}</div>}
       </section>}
 
+      {view === 'adminVerifications' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-lg text-[#102D3A]">Contrôle des entreprises</h2><p className="text-sm text-slate-500">File de validation réservée aux administrateurs plateforme et administrateurs locaux de leur pays.</p></div><button onClick={() => void loadAdminVerificationQueue()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>
+        {adminQueueLoading ? <p className="text-sm text-slate-500">Chargement de la file sécurisée…</p> : adminVerifications.length === 0 ? <p className="text-sm text-slate-500">Aucun dossier à afficher. Si votre compte n’a pas le rôle administrateur requis, l’API refusera l’accès.</p> : <div className="space-y-3">{adminVerifications.map(item => {
+          const draft = adminReviewDrafts[item.id] || { note: '', evidenceReference: '' };
+          return <article key={item.id} className="rounded-xl border border-slate-200 p-4 space-y-3">
+            <div className="flex flex-wrap justify-between gap-2"><div><h3 className="font-bold text-sm text-[#102D3A]">{item.organizationName || item.legalName}</h3><p className="text-xs text-slate-500">{item.legalName} · {item.countryIso2} · {item.registrationNumber}</p><p className="text-xs text-slate-500">{item.contactName} · {item.contactEmail}</p></div><span className="h-fit rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">{item.status}</span></div>
+            <textarea rows={2} maxLength={2000} value={draft.note} onChange={e => setAdminReviewDrafts({...adminReviewDrafts,[item.id]:{...draft,note:e.target.value}})} placeholder="Note de décision / informations demandées" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" />
+            <input maxLength={300} value={draft.evidenceReference} onChange={e => setAdminReviewDrafts({...adminReviewDrafts,[item.id]:{...draft,evidenceReference:e.target.value}})} placeholder="Référence du registre officiel ou justificatif consulté (obligatoire pour valider)" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" />
+            <div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => void reviewEmployerVerification(item.id,'VERIFY')} className="rounded-lg bg-emerald-700 text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Valider avec preuve</button><button disabled={busy} onClick={() => void reviewEmployerVerification(item.id,'REQUEST_INFO')} className="rounded-lg border border-amber-400 text-amber-800 px-3 py-2 text-xs font-bold disabled:opacity-50">Demander des infos</button><button disabled={busy} onClick={() => void reviewEmployerVerification(item.id,'REJECT')} className="rounded-lg border border-rose-300 text-rose-700 px-3 py-2 text-xs font-bold disabled:opacity-50">Refuser</button></div>
+          </article>;
+        })}</div>}
+        <p className="text-xs text-slate-500">La validation est une décision humaine. La référence de preuve est conservée dans le journal interne et n’est pas exposée à l’entreprise.</p>
+      </section>}
       {view === 'employerVerification' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-bold text-lg text-[#102D3A]">Vérification de l’entreprise</h2><p className="text-sm text-slate-500 mt-1">La vérification protège les candidats contre les offres publiées par des entreprises non contrôlées.</p></div><button onClick={() => void loadEmployerVerification()} className="text-xs font-bold text-[#087F70] inline-flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> Actualiser</button></div>
         {!organization ? <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-sm text-amber-800">Vous devez d’abord disposer d’un espace entreprise pour déposer un dossier.</div> : <>
