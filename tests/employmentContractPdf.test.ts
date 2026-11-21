@@ -15,10 +15,10 @@ test('renders a valid PDF draft with a non-signature disclaimer and substituted 
   const text = pdf.toString('latin1');
   assert.ok(text.startsWith('%PDF-1.4'));
   assert.ok(text.includes('/Type /Catalog'));
-  assert.ok(text.includes('BROUILLON'));
+  assert.ok(text.includes(Buffer.from('BROUILLON').toString('hex').toUpperCase()));
   assert.ok(text.includes('Société Étoile') === false); // text is safely encoded as WinAnsi hex
   assert.ok(text.includes('C9')); // É in WinAnsi
-  assert.ok(text.includes('NOT SIGNED') === false); // French disclaimer is used
+  assert.ok(!text.includes(Buffer.from('NOT SIGNED').toString('hex').toUpperCase())); // French disclaimer is used
 });
 
 test('rejects Arabic until an embedded Arabic font and shaping engine are configured', () => {
