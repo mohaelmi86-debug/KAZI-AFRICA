@@ -15,6 +15,8 @@ type Application = { id: string; status: string; submittedAt: string; jobTitle: 
 export const EmploymentModule: React.FC = () => {
   const { selectedCountryIso2 } = useApp();
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [selectedJob, setSelectedJob] = useState<any>(null);
+  const [coverLetter, setCoverLetter] = useState('');
   const [applications, setApplications] = useState<Application[]>([]);
   const [interviews, setInterviews] = useState<any[]>([]);
   const [interviewForm, setInterviewForm] = useState({ startsAt: '', endsAt: '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', mode: 'VIDEO', locationOrUrl: '' });
@@ -24,7 +26,7 @@ export const EmploymentModule: React.FC = () => {
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'jobs' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter'>('jobs');
+  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter'>('jobs');
   const [candidate, setCandidate] = useState({ headline: '', summary: '', city: '', skillsText: '', experienceYears: '0', visibility: 'PRIVATE' });
   const [employerJobs, setEmployerJobs] = useState<any[]>([]);
   const [selectedJobId, setSelectedJobId] = useState('');
@@ -172,11 +174,27 @@ export const EmploymentModule: React.FC = () => {
     finally { setBusy(false); }
   };
 
+  const openJob = async (jobId: string) => {
+    setBusy(true); setError('');
+    try {
+      const result = await apiFetch<{ job: any }>(`/api/employment/jobs/${jobId}`);
+      setSelectedJob(result.job);
+      setCoverLetter('');
+      setView('jobDetail');
+    } catch (e: any) { setError(e.message || 'Impossible de charger cette offre.'); }
+    finally { setBusy(false); }
+  };
+
   const apply = async (jobId: string) => {
     setBusy(true); setNotice(''); setError('');
     try {
-      await apiFetch(`/api/employment/jobs/${jobId}/applications`, { method: 'POST', body: JSON.stringify({}) });
+      await apiFetch(`/api/employment/jobs/${jobId}/applications`, {
+        method: 'POST', body: JSON.stringify({ coverLetter: coverLetter.trim() || null }),
+      });
       setNotice('Candidature envoyée. Vous pouvez suivre son évolution dans « Mes candidatures ».');
+      setCoverLetter('');
+      setView('applications');
+      await loadApplications();
     } catch (e: any) { setError(e.message || 'La candidature n’a pas pu être envoyée.'); }
     finally { setBusy(false); }
   };
@@ -227,9 +245,32 @@ export const EmploymentModule: React.FC = () => {
         {loading ? <div className="p-10 text-center text-sm text-slate-500">Chargement des offres…</div> : jobs.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"><BriefcaseBusiness className="w-8 h-8 mx-auto text-slate-400 mb-3" /><p className="font-semibold text-slate-700">Aucune offre publiée pour ce pays</p><p className="text-sm text-slate-500 mt-1">Les offres apparaîtront dès que le module Emploi sera activé et que les entreprises publieront leurs annonces.</p></div> :
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">{jobs.map(job => <article key={job.id} className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col gap-4">
             <div className="space-y-2"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-bold uppercase tracking-wider text-[#087F70]">{job.contractType.replaceAll('_',' ')}</span><span className="text-[10px] text-slate-500">{job.referenceCode}</span></div><h2 className="font-bold text-lg text-[#102D3A]">{job.title}</h2><div className="flex items-center gap-2 text-xs text-slate-600"><Building2 className="w-3.5 h-3.5" />{job.organizationName}</div><div className="flex items-center gap-2 text-xs text-slate-600"><MapPin className="w-3.5 h-3.5" />{job.city} · {job.countryName}</div><p className="text-sm text-slate-600 line-clamp-4 whitespace-pre-line">{job.description}</p></div>
-            <div className="mt-auto border-t border-slate-100 pt-3 flex items-center justify-between gap-2"><span className="text-xs font-semibold text-slate-700">{job.salaryMin || job.salaryMax ? `${job.salaryMin || '—'} – ${job.salaryMax || '—'} ${job.salaryCurrency} / ${job.salaryPeriod.toLowerCase()}` : 'Rémunération à préciser'}</span><button disabled={busy} onClick={() => void apply(job.id)} className="rounded-lg bg-[#087F70] px-3 py-2 text-xs font-bold text-white disabled:opacity-50 inline-flex items-center gap-1"><Send className="w-3.5 h-3.5" /> Postuler</button></div>
+            <div className="mt-auto border-t border-slate-100 pt-3 flex items-center justify-between gap-2"><span className="text-xs font-semibold text-slate-700">{job.salaryMin || job.salaryMax ? `${job.salaryMin || '—'} – ${job.salaryMax || '—'} ${job.salaryCurrency} / ${job.salaryPeriod.toLowerCase()}` : 'Rémunération à préciser'}</span><button disabled={busy} onClick={() => void openJob(job.id)} className="rounded-lg border border-[#087F70] text-[#087F70] px-3 py-2 text-xs font-bold disabled:opacity-50">Voir le détail</button></div>
           </article>)}</div>}
       </>}
+
+      {view === 'jobDetail' && selectedJob && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5">
+        <button onClick={() => setView('jobs')} className="text-xs font-bold text-[#087F70]">← Retour aux offres</button>
+        <div className="space-y-2">
+          <div className="text-xs font-bold uppercase tracking-wider text-[#087F70]">{selectedJob.contractType?.replaceAll('_',' ')} · {selectedJob.workMode?.replaceAll('_',' ')}</div>
+          <h2 className="text-2xl font-extrabold text-[#102D3A]">{selectedJob.title}</h2>
+          <p className="text-sm text-slate-600">{selectedJob.organizationName} · {selectedJob.city} · {selectedJob.countryName}</p>
+          {selectedJob.department && <p className="text-xs text-slate-500">Service : {selectedJob.department}</p>}
+          <p className="text-sm text-slate-700 whitespace-pre-line leading-6">{selectedJob.description}</p>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3 text-sm">
+          <div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">Rémunération</div><div className="font-semibold">{selectedJob.salaryMin || selectedJob.salaryMax ? `${selectedJob.salaryMin || '—'} – ${selectedJob.salaryMax || '—'} ${selectedJob.salaryCurrency} / ${String(selectedJob.salaryPeriod || '').toLowerCase()}` : 'À préciser par l’employeur'}</div></div>
+          <div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">Expérience</div><div className="font-semibold">{selectedJob.experienceLevel || 'Non précisée'}</div></div>
+          <div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">Référence</div><div className="font-semibold">{selectedJob.referenceCode}</div></div>
+          <div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">Date limite</div><div className="font-semibold">{selectedJob.applicationDeadline ? new Date(selectedJob.applicationDeadline).toLocaleDateString() : 'Non précisée'}</div></div>
+        </div>
+        {selectedJob.requiredSkills?.length > 0 && <div><h3 className="font-bold text-sm mb-2">Compétences recherchées</h3><div className="flex flex-wrap gap-2">{selectedJob.requiredSkills.map((skill: string) => <span key={skill} className="rounded-full bg-emerald-50 text-emerald-800 px-3 py-1 text-xs">{skill}</span>)}</div></div>}
+        <div className="border-t border-slate-200 pt-4 space-y-3">
+          <h3 className="font-bold text-sm">Votre candidature</h3>
+          <textarea value={coverLetter} onChange={e => setCoverLetter(e.target.value)} maxLength={5000} rows={5} placeholder="Présentez brièvement votre motivation (facultatif, 5 000 caractères maximum)." className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm" />
+          <div className="flex flex-wrap items-center gap-3"><button disabled={busy || !selectedJob.acceptingApplications} onClick={() => void apply(selectedJob.id)} className="rounded-xl bg-[#087F70] text-white px-5 py-3 text-sm font-bold disabled:opacity-50">{busy ? 'Envoi…' : 'Envoyer ma candidature'}</button>{!selectedJob.acceptingApplications && <span className="text-xs font-semibold text-rose-700">Les candidatures sont clôturées.</span>}</div>
+        </div>
+      </section>}
 
       {view === 'applications' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4"><div className="flex items-center justify-between"><h2 className="font-bold text-lg text-[#102D3A]">Suivi de mes candidatures</h2><button onClick={() => void loadApplications()} className="text-xs font-semibold text-[#087F70] inline-flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> Actualiser</button></div>{applications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature à afficher. Connectez-vous puis postulez à une offre.</p> : applications.map(app => <div key={app.id} className="border-t border-slate-100 py-3 flex flex-wrap items-center justify-between gap-3"><div><div className="font-semibold text-sm">{app.jobTitle}</div><div className="text-xs text-slate-500">{app.organizationName} · {app.jobCity} · {new Date(app.submittedAt).toLocaleDateString()}</div></div><div className="flex items-center gap-2"><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span>{['SUBMITTED','REVIEWING','SHORTLISTED','INTERVIEW'].includes(app.status) && <button disabled={busy} onClick={() => void withdrawApplication(app.id)} className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50">Retirer</button>}</div></div>)}</section>}
 
