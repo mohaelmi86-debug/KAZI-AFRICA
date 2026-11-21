@@ -285,3 +285,28 @@ Cette référence ne remplace pas la pièce justificative : elle assure la traç
 - Consultation du statut du dossier et du retour administratif.
 - Soumission et mise à jour des informations légales et du contact professionnel.
 - L'interface explique explicitement que la déclaration n'est pas une preuve de vérification et que les justificatifs seront collectés via le canal sécurisé à venir.
+
+
+## 13. Coffre documentaire candidat — dépôt privé et consentement
+
+### Flux livré
+- Dépôt serveur de PDF uniquement, taille maximale 8 Mio, contrôle du type HTTP et de la signature PDF (`%PDF-`).
+- Clé de stockage opaque, sans nom de fichier ni identifiant personnel dans le chemin : `employment/candidates/{profileId}/quarantine/{uuid}.pdf`.
+- Stockage dans le bucket Firebase privé via Firebase Admin, sans URL publique ni download token.
+- Calcul et conservation du SHA-256, taille, type documentaire, nom d'origine et statut de sécurité.
+- Statut initial obligatoire `QUARANTINED`; aucun endpoint applicatif ne permet à un candidat ou à un recruteur de le passer à `CLEAN`.
+- Coffre candidat : liste, suppression et dépôt de CV, diplômes et certificats.
+- Consentement explicite document par document et candidature par candidature ; révocation possible par le candidat.
+- Un recruteur ne peut lister que les documents explicitement partagés pour une candidature de son organisation.
+- Une URL de téléchargement signée de courte durée (5 minutes) n'est émise que si le document est `CLEAN` et si le consentement n'est pas révoqué.
+- Journalisation des dépôts, suppressions, consentements et révocations.
+- Règles Firebase Storage fournies dans `storage.rules` : accès direct client refusé en lecture et écriture.
+
+### Limites de sécurité à ne pas masquer
+- **Aucun fournisseur antivirus n'est actuellement configuré.** Les fichiers restent donc en quarantaine et ne peuvent pas être téléchargés par les recruteurs. Il n'existe aucun mécanisme de validation manuelle ou automatique permettant de contourner cet état.
+- L'analyse antivirus doit être branchée via un worker serveur dédié, avec résultat signé/fiable, timeout, reprise et passage à `CLEAN` uniquement après analyse réussie. Les fichiers infectés ou non analysables devront être `REJECTED`.
+- Le bucket Firebase, les identifiants ADC/IAM du serveur et le déploiement effectif de `storage.rules` doivent être vérifiés dans l'environnement cible. La présence du fichier de règles dans Git ne signifie pas qu'il est déjà déployé.
+- Les migrations SQL `0005_candidate_documents_quarantine.sql` doivent être appliquées à la base cible avant activation des routes.
+- Les tests d'intégration de stockage, de permissions IAM, de révocation et d'isolation multi-tenant restent à exécuter sur un environnement configuré.
+
+**État :** API et interface de dépôt/consentement implémentées ; stockage effectif dépendant de la configuration Firebase Admin/IAM ; antivirus non configuré ; aucun document n'est accessible aux recruteurs tant que le statut n'est pas `CLEAN`.
