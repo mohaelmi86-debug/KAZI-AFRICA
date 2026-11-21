@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { BriefcaseBusiness, Building2, MapPin, Search, Send, UserRound, RefreshCw } from 'lucide-react';
+import { BriefcaseBusiness, Building2, MapPin, Search, Send, UserRound, RefreshCw, Bell } from 'lucide-react';
 import { apiFetch } from '../../services/api';
 import { useApp } from '../../app/AppContext';
 import { useAuth } from '../auth/AuthContext';
@@ -44,6 +44,7 @@ export const EmploymentModule: React.FC = () => {
   const [cityFilter, setCityFilter] = useState('');
   const [contractFilter, setContractFilter] = useState('');
   const [workModeFilter, setWorkModeFilter] = useState('');
+  const [employmentNotifications, setEmploymentNotifications] = useState<any[]>([]);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter' | 'employerVerification' | 'adminVerifications'>('jobs');
@@ -90,6 +91,22 @@ export const EmploymentModule: React.FC = () => {
     }
   };
 
+  const loadEmploymentNotifications = async () => {
+    try {
+      const result = await apiFetch<{ notifications: any[] }>('/api/notifications');
+      setEmploymentNotifications(result.notifications || []);
+    } catch { /* notifications are supplementary; do not block the employment workspace */ }
+  };
+
+  const markEmploymentNotificationRead = async (id: string) => {
+    try {
+      await apiFetch(`/api/notifications/${id}/read`, { method: 'PATCH' });
+      setEmploymentNotifications((current) => current.map((item) => item.id === id ? { ...item, isRead: true } : item));
+    } catch (e: any) {
+      setError(e.message || 'Impossible de mettre à jour la notification.');
+    }
+  };
+
   const loadApplications = async () => {
     try {
       const result = await apiFetch<{ applications: Application[] }>('/api/employment/me/applications');
@@ -102,6 +119,7 @@ export const EmploymentModule: React.FC = () => {
     if (firebaseUser) {
       void loadWorkspace();
       void loadCandidate();
+      void loadEmploymentNotifications();
       return;
     }
     setOrganization(null);
@@ -110,6 +128,7 @@ export const EmploymentModule: React.FC = () => {
     setApplications([]);
     setInterviews([]);
     setCandidateDocuments([]);
+    setEmploymentNotifications([]);
   }, [authLoading, firebaseUser]);
 
   const toggleApplicationHistory = async (applicationId: string) => {
@@ -415,6 +434,21 @@ export const EmploymentModule: React.FC = () => {
           {availableOrganizations.map((org: any) => <option key={org.id} value={org.id}>{org.name}</option>)}
         </select>
       </div>}
+      {firebaseUser && <section aria-label="Notifications de recrutement" className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2"><Bell className="w-4 h-4 text-[#087F70]" /><h2 className="text-sm font-bold text-[#102D3A]">Notifications</h2>
+            {employmentNotifications.some((item) => !item.isRead) && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">{employmentNotifications.filter((item) => !item.isRead).length} non lue(s)</span>}
+          </div>
+          <button onClick={() => void loadEmploymentNotifications()} className="text-xs font-semibold text-[#087F70]">Actualiser</button>
+        </div>
+        {employmentNotifications.length === 0 ? <p className="text-xs text-slate-500">Aucune notification pour le moment.</p> :
+          <div className="space-y-2">{employmentNotifications.slice(0, 5).map((item) => <article key={item.id} className={`rounded-xl border p-3 ${item.isRead ? 'border-slate-100 bg-slate-50' : 'border-emerald-200 bg-emerald-50/50'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0"><p className="text-xs font-bold text-[#102D3A]">{item.titleFr || item.titleEn}</p><p className="mt-1 text-xs text-slate-600">{item.bodyFr || item.bodyEn}</p><p className="mt-1 text-[10px] text-slate-400">{item.createdAt ? new Date(item.createdAt).toLocaleString('fr-FR') : ''}</p></div>
+              {!item.isRead && <button onClick={() => void markEmploymentNotificationRead(item.id)} className="shrink-0 text-[10px] font-bold text-[#087F70]">Marquer lue</button>}
+            </div>
+          </article>)}</div>}
+      </section>}
       {notice && <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">{notice}</div>}
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
 
