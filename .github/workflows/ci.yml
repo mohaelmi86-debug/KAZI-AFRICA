@@ -31,5 +31,11 @@ jobs:
         run: bun run lint
       - name: Employment antivirus protocol tests
         run: bun run test:employment:scanner
+      - name: Validate antivirus Compose configuration
+        run: |
+          touch .env
+          docker compose -f compose.employment-scanner.yml config --quiet
+      - name: Build antivirus worker container
+        run: docker build -f Dockerfile.employment-scanner -t kazi-employment-scanner:ci .
       - name: Production build
         run: bun run build
