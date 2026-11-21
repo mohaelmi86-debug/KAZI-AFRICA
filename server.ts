@@ -1175,8 +1175,12 @@ app.patch('/api/employment/candidates/me', requireAuth, rateLimit(30, 60_000), a
     const headline = String(body.headline || '').trim();
     const summary = String(body.summary || '').trim();
     const city = String(body.city || '').trim();
-    const skills = Array.isArray(body.skills)
-      ? [...new Set(body.skills.map((v: unknown) => String(v).trim()).filter(Boolean).map((v: string) => v.slice(0, 60)))].slice(0, 40)
+    const skills: string[] = Array.isArray(body.skills)
+      ? Array.from(new Set<string>(
+          (body.skills as unknown[])
+            .map((value: unknown): string => String(value).trim().slice(0, 60))
+            .filter((value: string) => value.length > 0)
+        )).slice(0, 40)
       : [];
     const experienceYears = Number(body.experienceYears ?? 0);
     const visibility = String(body.visibility || 'PRIVATE').toUpperCase();
