@@ -1,0 +1,16 @@
+FROM oven/bun:1.3.5
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+COPY src/db ./src/db
+COPY src/lib/firebase-admin.ts ./src/lib/firebase-admin.ts
+COPY src/server/clamavScanner.ts ./src/server/clamavScanner.ts
+COPY scripts/scan-employment-documents.ts ./scripts/scan-employment-documents.ts
+COPY firebase-applet-config.json ./firebase-applet-config.json
+
+USER bun
+CMD ["bun", "run", "employment:scan-documents"]
