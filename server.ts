@@ -22,6 +22,7 @@ import {
   countryPaymentProviders,
   disputes,
   enrollments,
+  employerVerifications,
   evaluations,
   jobPosts,
   candidateProfiles,
@@ -933,6 +934,122 @@ async function canManageEmploymentOrg(organizationId: string, profileId: string,
   return !!member && ['OWNER', 'MANAGER', 'HR_ADMIN', 'RECRUITER'].includes(member.memberRole);
 }
 
+
+app.get('/api/employment/employer/verification', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const organizationId = String(req.query.organizationId || '');
+    if (!isValidUuid(organizationId)) return res.status(400).json({ error: 'Invalid organization ID' });
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) return res.status(403).json({ error: 'Access denied' });
+    const [verification] = await db.select({
+      id: employerVerifications.id, legalName: employerVerifications.legalName,
+      registrationNumber: employerVerifications.registrationNumber, contactName: employerVerifications.contactName,
+      contactEmail: employerVerifications.contactEmail, status: employerVerifications.status,
+      submittedAt: employerVerifications.submittedAt, reviewedAt: employerVerifications.reviewedAt,
+      reviewNote: employerVerifications.reviewNote,
+    }).from(employerVerifications).where(eq(employerVerifications.organizationId, organizationId)).limit(1);
+    res.json({ verification: verification || null });
+  } catch (err) {
+    console.error('Employer verification read error:', err);
+    res.status(500).json({ error: 'Unable to load employer verification' });
+  }
+});
+
+app.post('/api/employment/employer/verification', requireAuth, rateLimit(8, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const body = req.body || {};
+    const organizationId = String(body.organizationId || '');
+    const legalName = String(body.legalName || '').trim().slice(0, 180);
+    const registrationNumber = String(body.registrationNumber || '').trim().slice(0, 100);
+    const contactName = String(body.contactName || '').trim().slice(0, 120);
+    const contactEmail = String(body.contactEmail || '').trim().toLowerCase().slice(0, 254);
+    if (!isValidUuid(organizationId) || legalName.length < 2 || registrationNumber.length < 3 ||
+        contactName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+      return res.status(400).json({ error: 'Legal name, registration number and valid contact details are required' });
+    }
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) return res.status(403).json({ error: 'Access denied' });
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+    const [existing] = await db.select().from(employerVerifications)
+      .where(eq(employerVerifications.organizationId, organizationId)).limit(1);
+    if (existing?.status === 'VERIFIED') return res.status(409).json({ error: 'This organization is already verified' });
+    const values = {
+      legalName, registrationNumber, contactName, contactEmail, status: 'PENDING',
+      submittedAt: new Date(), reviewedByProfileId: null, reviewedAt: null, reviewNote: null, updatedAt: new Date(),
+    };
+    const [verification] = existing
+      ? await db.update(employerVerifications).set(values).where(eq(employerVerifications.id, existing.id)).returning()
+      : await db.insert(employerVerifications).values({ organizationId, ...values }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: org.countryId ? (await db.select({ iso2: countries.iso2 }).from(countries).where(eq(countries.id, org.countryId)).limit(1))[0]?.iso2 : null,
+      action: 'EMPLOYMENT_EMPLOYER_VERIFICATION_SUBMITTED', entityType: 'employer_verification',
+      entityId: verification.id, details: { organizationId, status: 'PENDING' },
+    });
+    res.status(201).json({ verification });
+  } catch (err) {
+    console.error('Employer verification submit error:', err);
+    res.status(500).json({ error: 'Unable to submit employer verification' });
+  }
+});
+
+app.get('/api/employment/admin/employer-verifications', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const isSuperAdmin = ctx.roles.includes('SUPER_ADMIN');
+    if (!isSuperAdmin && !ctx.roles.includes('LOCAL_ADMIN')) return res.status(403).json({ error: 'Admin access required' });
+    const rows = await db.select({
+      id: employerVerifications.id, organizationId: employerVerifications.organizationId,
+      legalName: employerVerifications.legalName, registrationNumber: employerVerifications.registrationNumber,
+      contactName: employerVerifications.contactName, contactEmail: employerVerifications.contactEmail,
+      status: employerVerifications.status, submittedAt: employerVerifications.submittedAt,
+      countryIso2: countries.iso2, organizationName: organizations.name,
+    }).from(employerVerifications)
+      .innerJoin(organizations, eq(employerVerifications.organizationId, organizations.id))
+      .innerJoin(countries, eq(organizations.countryId, countries.id))
+      .where(isSuperAdmin ? undefined : inArray(countries.iso2, ctx.adminCountryIso2s.length ? ctx.adminCountryIso2s : ['__NO_COUNTRY__']))
+      .orderBy(desc(employerVerifications.submittedAt)).limit(100);
+    res.json({ verifications: rows });
+  } catch (err) {
+    console.error('Employer verification queue error:', err);
+    res.status(500).json({ error: 'Unable to load verification queue' });
+  }
+});
+
+app.patch('/api/employment/admin/employer-verifications/:id', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const id = String(req.params.id);
+    if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid verification ID' });
+    const action = String(req.body?.action || '').toUpperCase();
+    const note = String(req.body?.note || '').trim().slice(0, 2000);
+    if (!['VERIFY', 'REJECT', 'REQUEST_INFO'].includes(action)) return res.status(400).json({ error: 'Invalid review action' });
+    const [record] = await db.select().from(employerVerifications).where(eq(employerVerifications.id, id)).limit(1);
+    if (!record) return res.status(404).json({ error: 'Verification not found' });
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, record.organizationId)).limit(1);
+    const [country] = org ? await db.select().from(countries).where(eq(countries.id, org.countryId)).limit(1) : [undefined];
+    const isSuperAdmin = ctx.roles.includes('SUPER_ADMIN');
+    if (!isSuperAdmin && (!ctx.roles.includes('LOCAL_ADMIN') || !country || !ctx.adminCountryIso2s.includes(country.iso2))) {
+      return res.status(403).json({ error: 'Country-scoped admin access denied' });
+    }
+    const status = action === 'VERIFY' ? 'VERIFIED' : action === 'REJECT' ? 'REJECTED' : 'MORE_INFO_REQUIRED';
+    const [updated] = await db.update(employerVerifications).set({
+      status, reviewNote: note || null, reviewedByProfileId: ctx.profileId, reviewedAt: new Date(), updatedAt: new Date(),
+    }).where(eq(employerVerifications.id, id)).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country?.iso2 || null, action: 'EMPLOYMENT_EMPLOYER_VERIFICATION_REVIEWED',
+      entityType: 'employer_verification', entityId: id, details: { organizationId: record.organizationId, status },
+    });
+    res.json({ verification: updated });
+  } catch (err) {
+    console.error('Employer verification review error:', err);
+    res.status(500).json({ error: 'Unable to review employer verification' });
+  }
+});
+
+
 app.get('/api/employment/jobs', rateLimit(90, 60_000), async (req, res) => {
   try {
     const countryIso2 = req.query.countryIso2 ? String(req.query.countryIso2).toUpperCase() : null;
@@ -1079,6 +1196,11 @@ app.post('/api/employment/jobs/:id/publish', requireAuth, rateLimit(20, 60_000),
     if (!job) return res.status(404).json({ error: 'Job offer not found' });
     if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+    const [employerVerification] = await db.select({ status: employerVerifications.status })
+      .from(employerVerifications).where(eq(employerVerifications.organizationId, job.organizationId)).limit(1);
+    if (employerVerification?.status !== 'VERIFIED') {
+      return res.status(403).json({ error: 'Employer verification is required before publishing job offers' });
     }
     if (job.status !== 'DRAFT' && job.status !== 'PAUSED') {
       return res.status(409).json({ error: 'Only draft or paused offers can be published' });
