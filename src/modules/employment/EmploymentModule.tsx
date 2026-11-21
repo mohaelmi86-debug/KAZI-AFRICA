@@ -21,12 +21,15 @@ export const EmploymentModule: React.FC = () => {
   const [interviews, setInterviews] = useState<any[]>([]);
   const [interviewForm, setInterviewForm] = useState({ startsAt: '', endsAt: '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', mode: 'VIDEO', locationOrUrl: '' });
   const [organization, setOrganization] = useState<any>(null);
+  const [employerVerification, setEmployerVerification] = useState<any>(null);
+  const [verificationForm, setVerificationForm] = useState({ legalName: '', registrationNumber: '', contactName: '', contactEmail: '' });
+  const [verificationLoading, setVerificationLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter'>('jobs');
+  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter' | 'employerVerification'>('jobs');
   const [candidate, setCandidate] = useState({ headline: '', summary: '', city: '', skillsText: '', experienceYears: '0', visibility: 'PRIVATE' });
   const [employerJobs, setEmployerJobs] = useState<any[]>([]);
   const [selectedJobId, setSelectedJobId] = useState('');
@@ -117,6 +120,28 @@ export const EmploymentModule: React.FC = () => {
       }) });
       setNotice('Votre profil professionnel a été enregistré.');
     } catch (e: any) { setError(e.message || 'Impossible d’enregistrer le profil.'); }
+    finally { setBusy(false); }
+  };
+
+  const loadEmployerVerification = async () => {
+    if (!organization?.id) { setError('Aucun espace entreprise associé à votre compte.'); return; }
+    setVerificationLoading(true); setError('');
+    try {
+      const result = await apiFetch<{ verification: any }>(`/api/employment/employer/verification?organizationId=${organization.id}`);
+      setEmployerVerification(result.verification || null);
+      if (result.verification) setVerificationForm({ legalName: result.verification.legalName || '', registrationNumber: result.verification.registrationNumber || '', contactName: result.verification.contactName || '', contactEmail: result.verification.contactEmail || '' });
+    } catch (e: any) { setError(e.message || 'Impossible de charger le dossier de vérification.'); }
+    finally { setVerificationLoading(false); }
+  };
+
+  const submitEmployerVerification = async (event: React.FormEvent) => {
+    event.preventDefault(); if (!organization?.id) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await apiFetch<{ verification: any }>('/api/employment/employer/verification', { method: 'POST', body: JSON.stringify({ organizationId: organization.id, ...verificationForm }) });
+      setEmployerVerification(result.verification);
+      setNotice('Votre dossier a été transmis. La publication des offres sera disponible après validation.');
+    } catch (e: any) { setError(e.message || 'Impossible de transmettre le dossier.'); }
     finally { setBusy(false); }
   };
 
@@ -230,6 +255,7 @@ export const EmploymentModule: React.FC = () => {
           <button onClick={() => { setView('interviews'); void loadInterviews(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'interviews' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes entretiens</button>
           <button onClick={() => setView('profile')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
           <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
+          <button onClick={() => { setView('employerVerification'); void loadEmployerVerification(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'employerVerification' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Vérification entreprise</button>
           <button onClick={() => setView('publish')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'publish' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Publier une offre</button>
         </div>
       </header>
@@ -317,6 +343,21 @@ export const EmploymentModule: React.FC = () => {
                 </div><div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div><div className="flex flex-wrap gap-2">{(app.status === 'SUBMITTED' ? ['REVIEWING','REJECTED'] : app.status === 'REVIEWING' ? ['SHORTLISTED','INTERVIEW','REJECTED'] : app.status === 'SHORTLISTED' ? ['INTERVIEW','OFFER','REJECTED'] : app.status === 'INTERVIEW' ? ['OFFER','REJECTED'] : app.status === 'OFFER' ? ['HIRED','REJECTED'] : []).map(next => <button key={next} onClick={() => void changeApplicationStatus(app.id,next)} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">{next === 'REVIEWING' ? 'Examiner' : next === 'SHORTLISTED' ? 'Présélectionner' : next === 'INTERVIEW' ? 'Entretien' : next === 'OFFER' ? 'Proposer embauche' : next === 'HIRED' ? 'Recruté' : 'Refuser'}</button>)}</div></article>)}</div>}
       </section>}
 
+      {view === 'employerVerification' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-bold text-lg text-[#102D3A]">Vérification de l’entreprise</h2><p className="text-sm text-slate-500 mt-1">La vérification protège les candidats contre les offres publiées par des entreprises non contrôlées.</p></div><button onClick={() => void loadEmployerVerification()} className="text-xs font-bold text-[#087F70] inline-flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> Actualiser</button></div>
+        {!organization ? <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-sm text-amber-800">Vous devez d’abord disposer d’un espace entreprise pour déposer un dossier.</div> : <>
+          <div className="rounded-xl border border-slate-200 p-4 flex items-center justify-between gap-3"><div><div className="text-xs text-slate-500">Statut du dossier</div><div className="font-bold text-sm mt-1">{employerVerification?.status === 'VERIFIED' ? 'Entreprise vérifiée' : employerVerification?.status === 'REJECTED' ? 'Dossier refusé' : employerVerification?.status === 'MORE_INFO_REQUIRED' ? 'Informations complémentaires requises' : employerVerification?.status === 'PENDING' ? 'En cours de vérification' : 'Non soumis'}</div></div><span className={'rounded-full px-3 py-1 text-xs font-bold ' + (employerVerification?.status === 'VERIFIED' ? 'bg-emerald-100 text-emerald-800' : employerVerification?.status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800')}>{employerVerification?.status || 'NOT_SUBMITTED'}</span></div>
+          {employerVerification?.reviewNote && <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700"><strong>Retour de l’administration :</strong> {employerVerification.reviewNote}</div>}
+          {employerVerification?.status === 'VERIFIED' ? <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-sm text-emerald-800">Votre entreprise est vérifiée. Vous pouvez publier des offres d’emploi sous réserve de l’activation du module dans votre pays.</div> : <form onSubmit={submitEmployerVerification} className="grid sm:grid-cols-2 gap-3">
+            <label className="text-xs font-semibold text-slate-600">Raison sociale<input required minLength={2} maxLength={180} value={verificationForm.legalName} onChange={e => setVerificationForm({...verificationForm,legalName:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" placeholder="Nom légal de l’entreprise" /></label>
+            <label className="text-xs font-semibold text-slate-600">Numéro d’immatriculation<input required minLength={3} maxLength={100} value={verificationForm.registrationNumber} onChange={e => setVerificationForm({...verificationForm,registrationNumber:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" placeholder="RCCM, registre national, etc." /></label>
+            <label className="text-xs font-semibold text-slate-600">Nom du contact<input required minLength={2} maxLength={120} value={verificationForm.contactName} onChange={e => setVerificationForm({...verificationForm,contactName:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" placeholder="Responsable légal ou RH" /></label>
+            <label className="text-xs font-semibold text-slate-600">E-mail professionnel<input required type="email" maxLength={254} value={verificationForm.contactEmail} onChange={e => setVerificationForm({...verificationForm,contactEmail:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" placeholder="contact@entreprise.com" /></label>
+            <div className="sm:col-span-2 rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">Ce formulaire transmet les informations déclaratives. Les justificatifs officiels et le contrôle auprès des registres nationaux seront traités dans une étape sécurisée distincte. Une déclaration seule ne constitue pas une validation légale.</div>
+            <button disabled={busy || verificationLoading} type="submit" className="sm:col-span-2 rounded-xl bg-[#087F70] text-white py-3 font-bold text-sm disabled:opacity-50">{busy ? 'Transmission…' : employerVerification?.status ? 'Mettre à jour mon dossier' : 'Soumettre pour vérification'}</button>
+          </form>}
+        </>}
+      </section>}
       {view === 'publish' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div><h2 className="font-bold text-lg text-[#102D3A]">Publier une offre d’emploi</h2><p className="text-sm text-slate-500 mt-1">{organization ? `Entreprise : ${organization.name}` : 'Un espace entreprise est requis pour publier.'}</p></div>{!organization ? <a href="/enterprise" className="inline-flex rounded-lg bg-[#087F70] text-white px-4 py-2.5 text-sm font-bold">Créer mon espace entreprise</a> : <form onSubmit={publish} className="grid sm:grid-cols-2 gap-3">
         <input required minLength={4} maxLength={160} value={form.title} onChange={e => setForm({...form,title:e.target.value})} placeholder="Intitulé du poste" className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm" />
         <input value={form.department} onChange={e => setForm({...form,department:e.target.value})} placeholder="Service / département" className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm" />
