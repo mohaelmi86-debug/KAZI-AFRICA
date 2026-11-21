@@ -5,7 +5,10 @@ import test from 'node:test';
 import { scanBufferWithClamAv } from '../src/server/clamavScanner.ts';
 
 async function withFakeClamAv(reply: string | null, run: (config: { host: string; port: number; timeoutMs: number }) => Promise<void>) {
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
     let request = Buffer.alloc(0);
     socket.on('data', (chunk) => { request = Buffer.concat([request, chunk]); });
     socket.on('end', () => {
@@ -20,9 +23,8 @@ async function withFakeClamAv(reply: string | null, run: (config: { host: string
   try {
     await run({ host: '127.0.0.1', port: address.port, timeoutMs: 1000 });
   } finally {
-    const closed = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    server.closeAllConnections();
-    await closed;
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
