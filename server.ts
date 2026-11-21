@@ -1075,6 +1075,9 @@ app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_
     if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
     const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
     if (!job || job.status !== 'PUBLISHED') return res.status(404).json({ error: 'Published job offer not found' });
+    if (!(await isEmploymentEnabled(job.countryId))) return res.status(409).json({ error: 'Employment is not currently enabled for this country' });
+    const [jobCountry] = await db.select().from(countries).where(eq(countries.id, job.countryId)).limit(1);
+    if (!jobCountry || jobCountry.status !== 'ACTIVE') return res.status(409).json({ error: 'Employment is not currently open in this country' });
     if (job.applicationDeadline && job.applicationDeadline.getTime() < Date.now()) {
       return res.status(409).json({ error: 'The application deadline has passed' });
     }
@@ -1100,7 +1103,7 @@ app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_
     });
     await db.insert(auditLogs).values({
       actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
-      countryIso2: job.countryId ? ctx.countryIso2 : null, action: 'EMPLOYMENT_APPLICATION_SUBMITTED',
+      countryIso2: jobCountry.iso2, action: 'EMPLOYMENT_APPLICATION_SUBMITTED',
       entityType: 'job_application', entityId: result.id, details: { jobPostId: job.id }
     });
     res.status(201).json({ application: result });
