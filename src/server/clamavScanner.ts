@@ -20,15 +20,18 @@ export function scanBufferWithClamAv(buffer: Buffer, config: ClamAvConfig): Prom
     const socket = net.createConnection({ host: config.host, port: config.port });
     let response = '';
     let settled = false;
+    let hardTimeout: ReturnType<typeof setTimeout>;
 
     const finish = (error?: Error, verdict?: ClamAvVerdict) => {
       if (settled) return;
       settled = true;
+      clearTimeout(hardTimeout);
       socket.destroy();
       if (error) reject(error);
       else resolve(verdict!);
     };
 
+    hardTimeout = setTimeout(() => finish(new Error('ClamAV scan timed out')), config.timeoutMs);
     socket.setTimeout(config.timeoutMs);
     socket.once('timeout', () => finish(new Error('ClamAV scan timed out')));
     socket.once('error', (error) => finish(new Error(`ClamAV connection failed: ${error.message}`)));
