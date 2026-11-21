@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { BriefcaseBusiness, Building2, MapPin, Search, Send, UserRound, RefreshCw } from 'lucide-react';
 import { apiFetch } from '../../services/api';
 import { useApp } from '../../app/AppContext';
+import { useAuth } from '../auth/AuthContext';
 
 type Job = {
   id: string; referenceCode: string; title: string; description: string;
@@ -14,6 +15,8 @@ type Application = { id: string; status: string; submittedAt: string; jobTitle: 
 
 export const EmploymentModule: React.FC = () => {
   const { selectedCountryIso2 } = useApp();
+  const { firebaseUser, roles } = useAuth();
+  const isPlatformAdmin = roles.includes('SUPER_ADMIN') || roles.includes('LOCAL_ADMIN');
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<any>(null);
   const [coverLetter, setCoverLetter] = useState('');
@@ -346,13 +349,17 @@ export const EmploymentModule: React.FC = () => {
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setView('jobs')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'jobs' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Offres</button>
-          <button onClick={() => { setView('applications'); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'applications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes candidatures</button>
-          <button onClick={() => { setView('interviews'); void loadInterviews(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'interviews' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes entretiens</button>
-          <button onClick={() => { setView('profile'); void loadCandidateDocuments(); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
-          <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
-          <button onClick={() => { setView('employerVerification'); void loadEmployerVerification(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'employerVerification' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Vérification entreprise</button>
-          <button onClick={() => { setView('adminVerifications'); void loadAdminVerificationQueue(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'adminVerifications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Administration</button>
-          <button onClick={() => setView('publish')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'publish' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Publier une offre</button>
+          {firebaseUser && <>
+            <button onClick={() => { setView('applications'); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'applications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes candidatures</button>
+            <button onClick={() => { setView('interviews'); void loadInterviews(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'interviews' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes entretiens</button>
+            <button onClick={() => { setView('profile'); void loadCandidateDocuments(); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
+          </>}
+          {firebaseUser && organization && <>
+            <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
+            <button onClick={() => { setView('employerVerification'); void loadEmployerVerification(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'employerVerification' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Vérification entreprise</button>
+            <button onClick={() => setView('publish')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'publish' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Publier une offre</button>
+          </>}
+          {firebaseUser && isPlatformAdmin && <button onClick={() => { setView('adminVerifications'); void loadAdminVerificationQueue(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'adminVerifications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Administration</button>}
         </div>
       </header>
 
