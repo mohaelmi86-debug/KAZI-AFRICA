@@ -25,6 +25,8 @@ import {
   enrollments,
   employerVerifications,
   employmentOffers,
+  employmentContractTemplates,
+  employmentContracts,
   evaluations,
   jobPosts,
   candidateProfiles,
@@ -2101,6 +2103,221 @@ app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 
     if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
     console.error('Update application status error:', err);
     res.status(500).json({ error: 'Unable to update application status' });
+  }
+});
+
+const canManageEmploymentCountry = async (countryId: string, profileId: string, roles: string[]) => {
+  if (roles.includes('SUPER_ADMIN')) return true;
+  if (!roles.includes('LOCAL_ADMIN')) return false;
+  const [assignment] = await db.select({ id: countryAdmins.id }).from(countryAdmins)
+    .where(and(eq(countryAdmins.countryId, countryId), eq(countryAdmins.profileId, profileId))).limit(1);
+  return Boolean(assignment);
+};
+
+app.post('/api/employment/contract-templates', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const countryId = String(req.body?.countryId || '');
+    const language = String(req.body?.language || '').toLowerCase();
+    const contractType = String(req.body?.contractType || '').toUpperCase();
+    const title = String(req.body?.title || '').trim().slice(0, 180);
+    const body = String(req.body?.body || '').trim().slice(0, 30000);
+    const version = Number(req.body?.version);
+    if (!isValidUuid(countryId) || !['fr', 'en', 'pt', 'ar'].includes(language) ||
+        !/^[A-Z_]{2,40}$/.test(contractType) || !title || !body ||
+        !Number.isInteger(version) || version < 1 || version > 1000) {
+      return res.status(400).json({ error: 'Invalid contract template fields' });
+    }
+    if (!(await canManageEmploymentCountry(countryId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Country-scoped administration permission required' });
+    }
+    const [country] = await db.select().from(countries).where(eq(countries.id, countryId)).limit(1);
+    if (!country || !(country.supportedLanguages || []).includes(language)) {
+      return res.status(400).json({ error: 'Language is not enabled for this country' });
+    }
+    const [template] = await db.insert(employmentContractTemplates).values({
+      countryId, language, contractType, version, title, body, status: 'DRAFT',
+      createdByProfileId: ctx.profileId,
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_CONTRACT_TEMPLATE_CREATED',
+      entityType: 'employment_contract_template', entityId: template.id,
+      details: { language, contractType, version },
+    });
+    res.status(201).json({ template });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'This template version already exists' });
+    console.error('Create employment contract template error:', err);
+    res.status(500).json({ error: 'Unable to create contract template' });
+  }
+});
+
+app.patch('/api/employment/contract-templates/:id/review', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const templateId = String(req.params.id);
+    const status = String(req.body?.status || '').toUpperCase();
+    const legalReviewReference = String(req.body?.legalReviewReference || '').trim().slice(0, 500);
+    if (!isValidUuid(templateId) || !['REVIEW', 'APPROVED', 'RETIRED'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid template review action' });
+    }
+    const [current] = await db.select().from(employmentContractTemplates)
+      .where(eq(employmentContractTemplates.id, templateId)).limit(1);
+    if (!current) return res.status(404).json({ error: 'Template not found' });
+    if (!(await canManageEmploymentCountry(current.countryId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Country-scoped administration permission required' });
+    }
+    if (status === 'APPROVED' && (!legalReviewReference || req.body?.legalReviewConfirmed !== true)) {
+      return res.status(400).json({ error: 'Explicit legal review confirmation and its reference are required' });
+    }
+    const [updated] = await db.update(employmentContractTemplates).set({
+      status, legalReviewReference: status === 'APPROVED' ? legalReviewReference : current.legalReviewReference,
+      validatedByProfileId: status === 'APPROVED' ? ctx.profileId : current.validatedByProfileId,
+      validatedAt: status === 'APPROVED' ? new Date() : current.validatedAt,
+      updatedAt: new Date(),
+    }).where(eq(employmentContractTemplates.id, templateId)).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_CONTRACT_TEMPLATE_REVIEWED',
+      entityType: 'employment_contract_template', entityId: templateId,
+      details: { fromStatus: current.status, toStatus: status, legalReviewReference: status === 'APPROVED' ? legalReviewReference : null },
+    });
+    res.json({ template: updated });
+  } catch (err) {
+    console.error('Review employment contract template error:', err);
+    res.status(500).json({ error: 'Unable to review contract template' });
+  }
+});
+
+app.get('/api/employment/contract-templates', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const countryId = String(req.query.countryId || '');
+    if (!isValidUuid(countryId)) return res.status(400).json({ error: 'Valid countryId is required' });
+    if (!(await canManageEmploymentCountry(countryId, req.authCtx!.profileId, req.authCtx!.roles))) {
+      return res.status(403).json({ error: 'Country-scoped administration permission required' });
+    }
+    const templates = await db.select().from(employmentContractTemplates)
+      .where(eq(employmentContractTemplates.countryId, countryId))
+      .orderBy(desc(employmentContractTemplates.createdAt)).limit(100);
+    res.json({ templates });
+  } catch (err) {
+    console.error('List employment contract templates error:', err);
+    res.status(500).json({ error: 'Unable to list contract templates' });
+  }
+});
+
+app.post('/api/employment/applications/:id/contracts', requireAuth, rateLimit(5, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    const templateId = String(req.body?.templateId || '');
+    const language = String(req.body?.language || '').toLowerCase();
+    if (!isValidUuid(applicationId) || !isValidUuid(templateId) ||
+        !['fr', 'en', 'pt', 'ar'].includes(language)) {
+      return res.status(400).json({ error: 'Invalid contract creation request' });
+    }
+    const [application] = await db.select().from(jobApplications)
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application || application.status !== 'HIRED') {
+      return res.status(409).json({ error: 'A contract can only be drafted after the candidate accepts an offer' });
+    }
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(404).json({ error: 'Application not found or access denied' });
+    }
+    const [offer] = await db.select().from(employmentOffers).where(and(
+      eq(employmentOffers.applicationId, application.id),
+      eq(employmentOffers.candidateProfileId, application.candidateProfileId),
+      eq(employmentOffers.status, 'ACCEPTED')
+    )).orderBy(desc(employmentOffers.version)).limit(1);
+    if (!offer) return res.status(409).json({ error: 'Accepted employment offer not found' });
+    const [existing] = await db.select({ id: employmentContracts.id }).from(employmentContracts)
+      .where(eq(employmentContracts.offerId, offer.id)).limit(1);
+    if (existing) return res.status(409).json({ error: 'A contract draft already exists for this accepted offer', contractId: existing.id });
+    const [template] = await db.select().from(employmentContractTemplates).where(and(
+      eq(employmentContractTemplates.id, templateId),
+      eq(employmentContractTemplates.countryId, offer.countryId),
+      eq(employmentContractTemplates.language, language),
+      eq(employmentContractTemplates.status, 'APPROVED'),
+      or(eq(employmentContractTemplates.contractType, offer.contractType), eq(employmentContractTemplates.contractType, 'ALL'))
+    )).limit(1);
+    if (!template) return res.status(409).json({ error: 'No legally reviewed and approved template matches this country, language and contract type' });
+    const [country] = await db.select().from(countries).where(eq(countries.id, offer.countryId)).limit(1);
+    const [organization] = await db.select().from(organizations).where(eq(organizations.id, offer.organizationId)).limit(1);
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.id, offer.candidateProfileId)).limit(1);
+    const [candidateIdentity] = candidate
+      ? await db.select({ fullName: profiles.fullName, email: profiles.email }).from(profiles).where(eq(profiles.id, candidate.profileId)).limit(1)
+      : [];
+    if (!country || !organization || !candidate || !candidateIdentity) {
+      return res.status(409).json({ error: 'Required country, employer or candidate data is incomplete' });
+    }
+    const termsSnapshot = {
+      generatedAt: new Date().toISOString(),
+      country: { iso2: country.iso2, iso3: country.iso3, name: country.nameFr, currency: country.defaultCurrency },
+      employer: { legalName: organization.name, registrationNumber: organization.registrationNumber },
+      candidate: { fullName: candidateIdentity.fullName, email: candidateIdentity.email },
+      offer: {
+        id: offer.id, version: offer.version, jobTitle: offer.jobTitleSnapshot, contractType: offer.contractType,
+        salaryAmount: offer.salaryAmount, salaryBasis: offer.salaryBasis, salaryCurrency: offer.salaryCurrency,
+        payFrequency: offer.payFrequency, startDate: offer.startDate, workLocation: offer.workLocation,
+        weeklyHours: offer.weeklyHours, probationDays: offer.probationDays, benefits: offer.benefits,
+        additionalConditions: offer.additionalConditions, localLawNotice: offer.localLawNotice,
+      },
+      template: { id: template.id, title: template.title, version: template.version, language: template.language,
+        body: template.body, legalReviewReference: template.legalReviewReference },
+    };
+    const [contract] = await db.insert(employmentContracts).values({
+      offerId: offer.id, applicationId: application.id, organizationId: offer.organizationId,
+      candidateProfileId: offer.candidateProfileId, countryId: offer.countryId,
+      templateId: template.id, templateVersion: template.version, language,
+      status: 'DRAFT', termsSnapshot, createdByProfileId: ctx.profileId,
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_CONTRACT_DRAFT_CREATED',
+      entityType: 'employment_contract', entityId: contract.id,
+      details: { offerId: offer.id, templateId: template.id, templateVersion: template.version },
+    });
+    res.status(201).json({ contract });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'A contract already exists for this offer' });
+    console.error('Create employment contract draft error:', err);
+    res.status(500).json({ error: 'Unable to create employment contract draft' });
+  }
+});
+
+app.get('/api/employment/me/contracts', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select({ id: candidateProfiles.id }).from(candidateProfiles)
+      .where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ contracts: [] });
+    const rows = await db.select({ contract: employmentContracts, organizationName: organizations.name, countryName: countries.nameFr })
+      .from(employmentContracts).innerJoin(organizations, eq(employmentContracts.organizationId, organizations.id))
+      .innerJoin(countries, eq(employmentContracts.countryId, countries.id))
+      .where(eq(employmentContracts.candidateProfileId, candidate.id))
+      .orderBy(desc(employmentContracts.createdAt)).limit(50);
+    res.json({ contracts: rows.map((row) => ({ ...row.contract, organizationName: row.organizationName, countryName: row.countryName })) });
+  } catch (err) {
+    console.error('Candidate employment contracts error:', err);
+    res.status(500).json({ error: 'Unable to load employment contracts' });
+  }
+});
+
+app.get('/api/employment/organizations/:organizationId/contracts', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const organizationId = String(req.params.organizationId);
+    if (!isValidUuid(organizationId) || !(await canManageEmploymentOrg(organizationId, req.authCtx!.profileId, req.authCtx!.roles))) {
+      return res.status(404).json({ error: 'Organization not found or access denied' });
+    }
+    const contracts = await db.select().from(employmentContracts)
+      .where(eq(employmentContracts.organizationId, organizationId))
+      .orderBy(desc(employmentContracts.createdAt)).limit(100);
+    res.json({ contracts });
+  } catch (err) {
+    console.error('Organization employment contracts error:', err);
+    res.status(500).json({ error: 'Unable to load organization contracts' });
   }
 });
 
