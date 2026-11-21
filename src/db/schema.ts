@@ -797,6 +797,10 @@ export const employmentContracts = pgTable(
     status: text('status').notNull().default('DRAFT'), // DRAFT | PENDING_SIGNATURE | PARTIALLY_SIGNED | SIGNED | ACTIVE | AMENDED | TERMINATED | EXPIRED | CANCELLED
     termsSnapshot: jsonb('terms_snapshot').$type<Record<string, unknown>>().notNull(),
     documentStoragePath: text('document_storage_path'),
+    documentSha256: text('document_sha256'),
+    documentSizeBytes: integer('document_size_bytes'),
+    documentGeneratedAt: timestamp('document_generated_at'),
+    documentVersion: integer('document_version').notNull().default(0),
     signatureProvider: text('signature_provider'),
     providerEnvelopeId: text('provider_envelope_id'),
     signedAt: timestamp('signed_at'),
