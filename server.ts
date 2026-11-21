@@ -1634,6 +1634,44 @@ app.get('/api/employment/me/applications', requireAuth, async (req: AuthRequest,
   }
 });
 
+app.get('/api/employment/applications/:id/events', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [application] = await db.select({
+      id: jobApplications.id,
+      candidateProfileId: jobApplications.candidateProfileId,
+      organizationId: jobPosts.organizationId,
+    }).from(jobApplications)
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    const isCandidate = candidate?.id === application.candidateProfileId;
+    const isEmployer = await canManageEmploymentOrg(application.organizationId, ctx.profileId, ctx.roles);
+    if (!isCandidate && !isEmployer) return res.status(404).json({ error: 'Application not found' });
+
+    const events = await db.select({
+      id: jobApplicationEvents.id,
+      fromStatus: jobApplicationEvents.fromStatus,
+      toStatus: jobApplicationEvents.toStatus,
+      note: isEmployer ? jobApplicationEvents.note : sql<string>`NULL`,
+      createdAt: jobApplicationEvents.createdAt,
+    }).from(jobApplicationEvents)
+      .where(eq(jobApplicationEvents.applicationId, applicationId))
+      .orderBy(desc(jobApplicationEvents.createdAt))
+      .limit(100);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ events });
+  } catch (err) {
+    console.error('Employment application history error:', err);
+    res.status(500).json({ error: 'Unable to load application history' });
+  }
+});
+
 app.get('/api/employment/jobs/:id/applications', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
