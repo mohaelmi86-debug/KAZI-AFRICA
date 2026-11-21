@@ -43,7 +43,7 @@ export function scanBufferWithClamAv(buffer: Buffer, config = requiredClamAvConf
       response += chunk.toString('utf8');
       if (response.length > 4096) return finish(new Error('ClamAV returned an oversized response'));
       if (!response.includes('\\0') && !response.endsWith('\\n')) return;
-      const result = response.trim();
+      const result = response.replace(/\\0/g, '').trim();
       if (result.endsWith(' OK')) return finish(undefined, 'CLEAN');
       if (result.includes(' FOUND')) return finish(undefined, 'INFECTED');
       finish(new Error(`ClamAV scan failed: ${result.slice(0, 300)}`));
