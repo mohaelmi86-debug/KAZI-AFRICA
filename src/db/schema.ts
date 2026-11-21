@@ -732,6 +732,7 @@ export const employmentOffers = pgTable(
     jobTitleSnapshot: text('job_title_snapshot').notNull(),
     contractType: text('contract_type').notNull(),
     salaryAmount: numeric('salary_amount', { precision: 14, scale: 2 }).notNull(),
+    salaryBasis: text('salary_basis').notNull().default('GROSS'),
     salaryCurrency: text('salary_currency').notNull(),
     payFrequency: text('pay_frequency').notNull(),
     startDate: text('start_date').notNull(),
