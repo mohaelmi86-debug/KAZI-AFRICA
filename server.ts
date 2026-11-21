@@ -2103,6 +2103,181 @@ app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 
   }
 });
 
+app.post('/api/employment/applications/:id/offers', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [application] = await db.select().from(jobApplications)
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(404).json({ error: 'Application not found or access denied' });
+    }
+    if (application.status !== 'OFFER') {
+      return res.status(409).json({ error: 'Move the application to OFFER before sending an employment offer' });
+    }
+    const [verification] = await db.select({ status: employerVerifications.status })
+      .from(employerVerifications).where(eq(employerVerifications.organizationId, job.organizationId)).limit(1);
+    if (verification?.status !== 'VERIFIED') {
+      return res.status(403).json({ error: 'Verified employer status is required' });
+    }
+    const [country] = await db.select().from(countries).where(eq(countries.id, job.countryId)).limit(1);
+    if (!country) return res.status(409).json({ error: 'Country configuration is unavailable' });
+
+    const salaryAmount = Number(req.body?.salaryAmount);
+    const payFrequency = String(req.body?.payFrequency || 'MONTH').toUpperCase();
+    const startDate = String(req.body?.startDate || '');
+    const workLocation = String(req.body?.workLocation || '').trim().slice(0, 240);
+    const weeklyHours = req.body?.weeklyHours == null || req.body.weeklyHours === '' ? null : Number(req.body.weeklyHours);
+    const probationDays = req.body?.probationDays == null || req.body.probationDays === '' ? null : Number(req.body.probationDays);
+    const benefits = req.body?.benefits == null ? null : String(req.body.benefits).trim().slice(0, 3000);
+    const additionalConditions = req.body?.additionalConditions == null ? null : String(req.body.additionalConditions).trim().slice(0, 5000);
+    const localLawNotice = req.body?.localLawNotice == null ? null : String(req.body.localLawNotice).trim().slice(0, 3000);
+    const expiresInDays = Number(req.body?.expiresInDays ?? 7);
+    const startDateTime = new Date(`${startDate}T00:00:00.000Z`);
+    if (!Number.isFinite(salaryAmount) || salaryAmount <= 0 || salaryAmount > 1_000_000_000 ||
+        !['HOUR', 'WEEK', 'MONTH', 'YEAR'].includes(payFrequency) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startDateTime.getTime()) ||
+        startDateTime.toISOString().slice(0, 10) !== startDate ||
+        startDate < new Date().toISOString().slice(0, 10) ||
+        !workLocation || (weeklyHours !== null && (!Number.isFinite(weeklyHours) || weeklyHours <= 0 || weeklyHours > 168)) ||
+        (probationDays !== null && (!Number.isInteger(probationDays) || probationDays < 0 || probationDays > 365)) ||
+        !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 30) {
+      return res.status(400).json({ error: 'Invalid offer terms. Check salary, pay frequency, start date, location and expiry.' });
+    }
+    const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+    const offer = await db.transaction(async (tx) => {
+      const previous = await tx.select({ version: employmentOffers.version })
+        .from(employmentOffers).where(eq(employmentOffers.applicationId, application.id))
+        .orderBy(desc(employmentOffers.version)).limit(1);
+      const version = (previous[0]?.version || 0) + 1;
+      await tx.update(employmentOffers).set({ status: 'SUPERSEDED', updatedAt: new Date() })
+        .where(and(eq(employmentOffers.applicationId, application.id), eq(employmentOffers.status, 'SENT')));
+      const [created] = await tx.insert(employmentOffers).values({
+        applicationId: application.id, jobPostId: job.id, organizationId: job.organizationId,
+        candidateProfileId: application.candidateProfileId, countryId: job.countryId, version,
+        status: 'SENT', jobTitleSnapshot: job.title, contractType: job.contractType,
+        salaryAmount: salaryAmount.toFixed(2), salaryCurrency: country.defaultCurrency,
+        payFrequency, startDate, workLocation, weeklyHours: weeklyHours === null ? null : weeklyHours.toFixed(2),
+        probationDays, benefits, additionalConditions, localLawNotice, expiresAt,
+        createdByProfileId: ctx.profileId,
+      }).returning();
+      return created;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_OFFER_SENT',
+      entityType: 'employment_offer', entityId: offer.id,
+      details: { applicationId, version: offer.version, salaryCurrency: offer.salaryCurrency },
+    });
+    await notifyEmploymentCandidate(application.candidateProfileId, {
+      type: 'EMPLOYMENT_OFFER_SENT', eventKey: `employment:offer-sent:${offer.id}`,
+      titleFr: 'Proposition d’embauche reçue', titleEn: 'Employment offer received', titleAr: 'تلقيت عرض عمل', titlePt: 'Recebeu uma proposta de emprego',
+      bodyFr: `Vous avez reçu une proposition pour « ${job.title} ». Répondez avant le ${expiresAt.toLocaleDateString('fr-FR')}.`,
+      bodyEn: `You received an offer for “${job.title}”. Respond by ${expiresAt.toLocaleDateString('en-GB')}.`,
+      bodyAr: `تلقيت عرض عمل لوظيفة « ${job.title} ». يرجى الرد قبل ${expiresAt.toLocaleDateString('en-GB')}.`,
+      bodyPt: `Recebeu uma proposta para « ${job.title} ». Responda até ${expiresAt.toLocaleDateString('pt-PT')}.`,
+    });
+    res.status(201).json({ offer });
+  } catch (err) {
+    console.error('Create employment offer error:', err);
+    res.status(500).json({ error: 'Unable to create employment offer' });
+  }
+});
+
+app.get('/api/employment/me/offers', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ offers: [] });
+    const now = new Date();
+    await db.update(employmentOffers).set({ status: 'EXPIRED', updatedAt: now })
+      .where(and(eq(employmentOffers.candidateProfileId, candidate.id), eq(employmentOffers.status, 'SENT'), sql`${employmentOffers.expiresAt} < ${now}`));
+    const offers = await db.select({
+      offer: employmentOffers, organizationName: organizations.name,
+      countryName: countries.nameFr,
+    }).from(employmentOffers)
+      .innerJoin(organizations, eq(employmentOffers.organizationId, organizations.id))
+      .innerJoin(countries, eq(employmentOffers.countryId, countries.id))
+      .where(eq(employmentOffers.candidateProfileId, candidate.id))
+      .orderBy(desc(employmentOffers.createdAt)).limit(50);
+    res.json({ offers: offers.map((row) => ({ ...row.offer, organizationName: row.organizationName, countryName: row.countryName })) });
+  } catch (err) {
+    console.error('Candidate employment offers error:', err);
+    res.status(500).json({ error: 'Unable to load employment offers' });
+  }
+});
+
+app.patch('/api/employment/offers/:id/response', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const offerId = String(req.params.id);
+    const response = String(req.body?.response || '').toUpperCase();
+    const responseNote = req.body?.note == null ? null : String(req.body.note).trim().slice(0, 1000);
+    if (!isValidUuid(offerId) || !['ACCEPTED', 'DECLINED'].includes(response)) {
+      return res.status(400).json({ error: 'Invalid offer response' });
+    }
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Offer not found' });
+    const [current] = await db.select().from(employmentOffers).where(and(
+      eq(employmentOffers.id, offerId), eq(employmentOffers.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!current) return res.status(404).json({ error: 'Offer not found' });
+    if (current.status !== 'SENT') return res.status(409).json({ error: 'This offer is no longer awaiting a response' });
+    if (current.expiresAt.getTime() <= Date.now()) {
+      await db.update(employmentOffers).set({ status: 'EXPIRED', updatedAt: new Date() })
+        .where(and(eq(employmentOffers.id, offerId), eq(employmentOffers.status, 'SENT')));
+      return res.status(409).json({ error: 'This offer has expired' });
+    }
+    await db.transaction(async (tx) => {
+      const [updated] = await tx.update(employmentOffers).set({
+        status: response, candidateResponseAt: new Date(), candidateResponseNote: responseNote, updatedAt: new Date(),
+      }).where(and(
+        eq(employmentOffers.id, offerId), eq(employmentOffers.candidateProfileId, candidate.id),
+        eq(employmentOffers.status, 'SENT'), gte(employmentOffers.expiresAt, new Date())
+      )).returning();
+      if (!updated) throw new Error('Offer was updated concurrently or has expired');
+      if (response === 'ACCEPTED') {
+        const [application] = await tx.update(jobApplications).set({ status: 'HIRED', updatedAt: new Date() })
+          .where(and(eq(jobApplications.id, current.applicationId), eq(jobApplications.status, 'OFFER'))).returning();
+        if (!application) throw new Error('Application is no longer awaiting an offer decision');
+        await tx.insert(jobApplicationEvents).values({
+          applicationId: current.applicationId, actorProfileId: ctx.profileId,
+          fromStatus: 'OFFER', toStatus: 'HIRED', note: 'Candidate accepted employment offer',
+        });
+      }
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: response === 'ACCEPTED' ? 'EMPLOYMENT_OFFER_ACCEPTED' : 'EMPLOYMENT_OFFER_DECLINED',
+      entityType: 'employment_offer', entityId: offerId,
+      details: { applicationId: current.applicationId, version: current.version },
+    });
+    await notifyEmploymentOrganization(current.organizationId, {
+      type: `EMPLOYMENT_OFFER_${response}`, eventKey: `employment:offer-response:${offerId}:${response}`,
+      titleFr: response === 'ACCEPTED' ? 'Proposition acceptée' : 'Proposition refusée',
+      titleEn: response === 'ACCEPTED' ? 'Offer accepted' : 'Offer declined',
+      titleAr: response === 'ACCEPTED' ? 'تم قبول العرض' : 'تم رفض العرض',
+      titlePt: response === 'ACCEPTED' ? 'Proposta aceite' : 'Proposta recusada',
+      bodyFr: `Le candidat a ${response === 'ACCEPTED' ? 'accepté' : 'refusé'} la proposition pour « ${current.jobTitleSnapshot} ».`,
+      bodyEn: `The candidate has ${response === 'ACCEPTED' ? 'accepted' : 'declined'} the offer for “${current.jobTitleSnapshot}”.`,
+      bodyAr: `قام المرشح ${response === 'ACCEPTED' ? 'بقبول' : 'برفض'} العرض لوظيفة « ${current.jobTitleSnapshot} ».`,
+      bodyPt: `O candidato ${response === 'ACCEPTED' ? 'aceitou' : 'recusou'} a proposta para « ${current.jobTitleSnapshot} ».`,
+    });
+    res.json({ success: true, response });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently') || String(err?.message || '').includes('no longer awaiting')) {
+      return res.status(409).json({ error: err.message });
+    }
+    console.error('Respond to employment offer error:', err);
+    res.status(500).json({ error: 'Unable to save offer response' });
+  }
+});
+
 app.get('/api/opportunities', async (req, res) => {
   try {
     const countryFilter = req.query.countryIso2 ? String(req.query.countryIso2).toUpperCase() : 'ALL';
