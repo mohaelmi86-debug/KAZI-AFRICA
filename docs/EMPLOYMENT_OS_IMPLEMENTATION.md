@@ -267,3 +267,13 @@ La fonctionnalité de CV et de pièces jointes reste séparée et doit utiliser 
 - Migration : `drizzle/0003_employer_verifications.sql`.
 
 Limites : cette tranche collecte les informations déclaratives mais ne vérifie pas automatiquement les registres nationaux et ne gère pas encore le téléversement des justificatifs. La vérification humaine des pièces via un canal sécurisé reste nécessaire ; ne pas considérer une entreprise comme vérifiée sur la seule base de sa déclaration.
+
+
+### Durcissement de la vérification — preuve de contrôle obligatoire
+
+- Le champ `review_evidence_reference` conserve une référence de registre officiel ou de justificatif consulté par le réviseur.
+- L'API refuse toute décision `VERIFY` sans référence de preuve d'au moins cinq caractères.
+- La référence est réservée au journal interne de vérification et n'est pas exposée dans le dossier public de l'entreprise.
+- Migration complémentaire : `drizzle/0004_employer_verification_evidence.sql`.
+
+Cette référence ne remplace pas la pièce justificative : elle assure la traçabilité de la vérification humaine effectuée hors plateforme jusqu'à l'intégration du dépôt documentaire sécurisé.
