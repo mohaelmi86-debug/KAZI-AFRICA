@@ -742,6 +742,29 @@ export const jobInterviewEvaluations = pgTable(
   ]
 );
 
+
+export const employerVerifications = pgTable(
+  'employer_verifications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull().unique(),
+    legalName: text('legal_name').notNull(),
+    registrationNumber: text('registration_number').notNull(),
+    contactName: text('contact_name').notNull(),
+    contactEmail: text('contact_email').notNull(),
+    status: text('status').notNull().default('PENDING'), // PENDING | VERIFIED | REJECTED | MORE_INFO_REQUIRED
+    submittedAt: timestamp('submitted_at').defaultNow().notNull(),
+    reviewedByProfileId: uuid('reviewed_by_profile_id').references(() => profiles.id),
+    reviewedAt: timestamp('reviewed_at'),
+    reviewNote: text('review_note'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('employer_verifications_status_submitted_idx').on(table.status, table.submittedAt),
+  ]
+);
+
 // ============================================================================
 // RELATIONS DRIZZLE
 // ============================================================================
