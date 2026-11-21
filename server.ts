@@ -1111,6 +1111,118 @@ app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_
   }
 });
 
+
+app.get('/api/employment/me/applications', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select().from(candidateProfiles)
+      .where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ applications: [] });
+    const rows = await db.select({
+      id: jobApplications.id, status: jobApplications.status,
+      submittedAt: jobApplications.submittedAt, updatedAt: jobApplications.updatedAt,
+      coverLetter: jobApplications.coverLetter,
+      jobId: jobPosts.id, jobTitle: jobPosts.title, jobCity: jobPosts.city,
+      contractType: jobPosts.contractType, workMode: jobPosts.workMode,
+      organizationName: organizations.name, countryIso2: countries.iso2,
+    }).from(jobApplications)
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .innerJoin(countries, eq(jobPosts.countryId, countries.id))
+      .where(eq(jobApplications.candidateProfileId, candidate.id))
+      .orderBy(desc(jobApplications.submittedAt));
+    res.json({ applications: rows });
+  } catch (err) {
+    console.error('Candidate applications error:', err);
+    res.status(500).json({ error: 'Unable to load your applications' });
+  }
+});
+
+app.get('/api/employment/jobs/:id/applications', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job) return res.status(404).json({ error: 'Job offer not found' });
+    if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const rows = await db.select({
+      id: jobApplications.id, status: jobApplications.status,
+      submittedAt: jobApplications.submittedAt, updatedAt: jobApplications.updatedAt,
+      coverLetter: jobApplications.coverLetter,
+      candidateProfileId: candidateProfiles.id,
+      headline: candidateProfiles.headline, summary: candidateProfiles.summary,
+      city: candidateProfiles.city, countryIso2: candidateProfiles.countryIso2,
+      skills: candidateProfiles.skills, experienceYears: candidateProfiles.experienceYears,
+      candidateName: profiles.fullName,
+    }).from(jobApplications)
+      .innerJoin(candidateProfiles, eq(jobApplications.candidateProfileId, candidateProfiles.id))
+      .innerJoin(profiles, eq(candidateProfiles.profileId, profiles.id))
+      .where(eq(jobApplications.jobPostId, job.id))
+      .orderBy(desc(jobApplications.submittedAt));
+    res.json({ applications: rows });
+  } catch (err) {
+    console.error('Employer applications error:', err);
+    res.status(500).json({ error: 'Unable to load applications' });
+  }
+});
+
+app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    const nextStatus = String(req.body?.status || '').toUpperCase();
+    const allowed = ['REVIEWING', 'SHORTLISTED', 'INTERVIEW', 'OFFER', 'HIRED', 'REJECTED'];
+    if (!isValidUuid(applicationId) || !allowed.includes(nextStatus)) {
+      return res.status(400).json({ error: 'Invalid application ID or status' });
+    }
+    const [application] = await db.select().from(jobApplications)
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const [job] = await db.select().from(jobPosts)
+      .where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const transitions: Record<string, string[]> = {
+      SUBMITTED: ['REVIEWING', 'REJECTED'],
+      REVIEWING: ['SHORTLISTED', 'INTERVIEW', 'REJECTED'],
+      SHORTLISTED: ['INTERVIEW', 'OFFER', 'REJECTED'],
+      INTERVIEW: ['OFFER', 'REJECTED'],
+      OFFER: ['HIRED', 'REJECTED'],
+      HIRED: [], REJECTED: [], WITHDRAWN: [],
+    };
+    if (!(transitions[application.status] || []).includes(nextStatus)) {
+      return res.status(409).json({ error: `Transition ${application.status} → ${nextStatus} is not allowed` });
+    }
+    const note = req.body?.note == null ? null : String(req.body.note).trim().slice(0, 1000);
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx.update(jobApplications)
+        .set({ status: nextStatus, updatedAt: new Date() })
+        .where(and(eq(jobApplications.id, application.id), eq(jobApplications.status, application.status)))
+        .returning();
+      if (!row) throw new Error('Application status changed concurrently; reload and retry');
+      await tx.insert(jobApplicationEvents).values({
+        applicationId: application.id, actorProfileId: ctx.profileId,
+        fromStatus: application.status, toStatus: nextStatus, note,
+      });
+      return row;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_APPLICATION_STATUS_CHANGED', entityType: 'job_application',
+      entityId: application.id, details: { jobPostId: job.id, from: application.status, to: nextStatus },
+    });
+    res.json({ application: updated });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
+    console.error('Update application status error:', err);
+    res.status(500).json({ error: 'Unable to update application status' });
+  }
+});
+
 app.get('/api/opportunities', async (req, res) => {
   try {
     const countryFilter = req.query.countryIso2 ? String(req.query.countryIso2).toUpperCase() : 'ALL';
