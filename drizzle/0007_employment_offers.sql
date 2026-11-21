@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS employment_offers (
   job_title_snapshot text NOT NULL,
   contract_type text NOT NULL,
   salary_amount numeric(14,2) NOT NULL CHECK (salary_amount > 0),
+  salary_basis text NOT NULL DEFAULT 'GROSS' CHECK (salary_basis IN ('GROSS', 'NET')),
   salary_currency text NOT NULL CHECK (salary_currency ~ '^[A-Z]{3}$'),
   pay_frequency text NOT NULL CHECK (pay_frequency IN ('HOUR', 'WEEK', 'MONTH', 'YEAR')),
   start_date text NOT NULL,
