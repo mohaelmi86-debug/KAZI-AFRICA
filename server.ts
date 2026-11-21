@@ -2183,7 +2183,8 @@ app.post('/api/employment/applications/:id/offers', requireAuth, rateLimit(10, 6
       bodyPt: `Recebeu uma proposta para « ${job.title} ». Responda até ${expiresAt.toLocaleDateString('pt-PT')}.`,
     });
     res.status(201).json({ offer });
-  } catch (err) {
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'An active offer already exists or the offer version changed concurrently. Refresh and retry.' });
     console.error('Create employment offer error:', err);
     res.status(500).json({ error: 'Unable to create employment offer' });
   }
