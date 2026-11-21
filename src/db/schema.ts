@@ -758,6 +758,7 @@ export const employerVerifications = pgTable(
     reviewedByProfileId: uuid('reviewed_by_profile_id').references(() => profiles.id),
     reviewedAt: timestamp('reviewed_at'),
     reviewNote: text('review_note'),
+    reviewEvidenceReference: text('review_evidence_reference'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
