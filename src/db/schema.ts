@@ -620,6 +620,88 @@ export const supportTickets = pgTable('support_tickets', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+
+ // ============================================================================
+ // EMPLOYMENT OS — RECRUTEMENT SALARIÉ (distinct des missions de prestation)
+ // ============================================================================
+export const jobPosts = pgTable(
+  'job_posts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    countryId: uuid('country_id').references(() => countries.id).notNull(),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    referenceCode: text('reference_code').notNull().unique(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    department: text('department'),
+    contractType: text('contract_type').notNull(),
+    workMode: text('work_mode').notNull().default('ONSITE'),
+    city: text('city').notNull(),
+    salaryMin: numeric('salary_min', { precision: 14, scale: 2 }),
+    salaryMax: numeric('salary_max', { precision: 14, scale: 2 }),
+    salaryCurrency: text('salary_currency').notNull(),
+    salaryPeriod: text('salary_period').notNull().default('MONTH'),
+    experienceLevel: text('experience_level'),
+    requiredSkills: jsonb('required_skills').$type<string[]>().notNull().default([]),
+    applicationDeadline: timestamp('application_deadline'),
+    status: text('status').notNull().default('DRAFT'), // DRAFT | PUBLISHED | PAUSED | CLOSED | EXPIRED
+    publishedAt: timestamp('published_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('job_posts_country_status_created_idx').on(table.countryId, table.status, table.createdAt),
+    index('job_posts_org_status_idx').on(table.organizationId, table.status),
+  ]
+);
+
+export const candidateProfiles = pgTable(
+  'candidate_profiles',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    profileId: uuid('profile_id').references(() => profiles.id, { onDelete: 'cascade' }).notNull().unique(),
+    headline: text('headline'),
+    summary: text('summary'),
+    city: text('city'),
+    countryIso2: text('country_iso2').notNull(),
+    skills: jsonb('skills').$type<string[]>().notNull().default([]),
+    experienceYears: integer('experience_years').notNull().default(0),
+    cvStorageRef: text('cv_storage_ref'),
+    visibility: text('visibility').notNull().default('PRIVATE'), // PRIVATE | EMPLOYERS_WITH_APPLICATION | PUBLIC
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [index('candidate_profiles_country_idx').on(table.countryIso2)]
+);
+
+export const jobApplications = pgTable(
+  'job_applications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    jobPostId: uuid('job_post_id').references(() => jobPosts.id, { onDelete: 'cascade' }).notNull(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'cascade' }).notNull(),
+    coverLetter: text('cover_letter'),
+    status: text('status').notNull().default('SUBMITTED'), // SUBMITTED | REVIEWING | SHORTLISTED | INTERVIEW | OFFER | HIRED | REJECTED | WITHDRAWN
+    submittedAt: timestamp('submitted_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_applications_job_candidate_unique_idx').on(table.jobPostId, table.candidateProfileId),
+    index('job_applications_job_status_idx').on(table.jobPostId, table.status),
+    index('job_applications_candidate_idx').on(table.candidateProfileId, table.submittedAt),
+  ]
+);
+
+export const jobApplicationEvents = pgTable('job_application_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+  actorProfileId: uuid('actor_profile_id').references(() => profiles.id),
+  fromStatus: text('from_status'),
+  toStatus: text('to_status').notNull(),
+  note: text('note'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [index('job_application_events_application_created_idx').on(table.applicationId, table.createdAt)]);
+
 // ============================================================================
 // RELATIONS DRIZZLE
 // ============================================================================
