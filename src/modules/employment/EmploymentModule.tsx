@@ -16,13 +16,15 @@ export const EmploymentModule: React.FC = () => {
   const { selectedCountryIso2 } = useApp();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [applications, setApplications] = useState<Application[]>([]);
+  const [interviews, setInterviews] = useState<any[]>([]);
+  const [interviewForm, setInterviewForm] = useState({ startsAt: '', endsAt: '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', mode: 'VIDEO', locationOrUrl: '' });
   const [organization, setOrganization] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'jobs' | 'applications' | 'publish' | 'profile' | 'recruiter'>('jobs');
+  const [view, setView] = useState<'jobs' | 'applications' | 'interviews' | 'publish' | 'profile' | 'recruiter'>('jobs');
   const [candidate, setCandidate] = useState({ headline: '', summary: '', city: '', skillsText: '', experienceYears: '0', visibility: 'PRIVATE' });
   const [employerJobs, setEmployerJobs] = useState<any[]>([]);
   const [selectedJobId, setSelectedJobId] = useState('');
@@ -57,6 +59,41 @@ export const EmploymentModule: React.FC = () => {
   };
 
   useEffect(() => { void loadWorkspace(); void loadCandidate(); }, []);
+
+  const loadInterviews = async () => {
+    try {
+      const result = await apiFetch<{ interviews: any[] }>('/api/employment/me/interviews');
+      setInterviews(result.interviews || []);
+    } catch (e: any) { setError(e.message || 'Impossible de charger les entretiens.'); }
+  };
+
+  const respondToInterview = async (id: string, response: 'CONFIRMED' | 'DECLINED') => {
+    try {
+      await apiFetch(`/api/employment/interviews/${id}/response`, {
+        method: 'PATCH', body: JSON.stringify({ response }),
+      });
+      await loadInterviews();
+      setNotice(response === 'CONFIRMED' ? 'Entretien confirmé.' : 'Invitation refusée.');
+    } catch (e: any) { setError(e.message || 'Impossible d’enregistrer votre réponse.'); }
+  };
+
+  const scheduleInterview = async (applicationId: string) => {
+    if (!interviewForm.startsAt || !interviewForm.endsAt) { setError('Renseignez les dates de début et de fin.'); return; }
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch(`/api/employment/applications/${applicationId}/interviews`, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...interviewForm,
+          startsAt: new Date(interviewForm.startsAt).toISOString(),
+          endsAt: new Date(interviewForm.endsAt).toISOString(),
+        }),
+      });
+      if (selectedJobId) await loadJobApplications(selectedJobId);
+      setNotice('Invitation à l’entretien envoyée au candidat.');
+    } catch (e: any) { setError(e.message || 'Impossible de planifier cet entretien.'); }
+    finally { setBusy(false); }
+  };
 
   const loadCandidate = async () => {
     try {
@@ -151,6 +188,7 @@ export const EmploymentModule: React.FC = () => {
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setView('jobs')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'jobs' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Offres</button>
           <button onClick={() => { setView('applications'); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'applications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes candidatures</button>
+          <button onClick={() => { setView('interviews'); void loadInterviews(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'interviews' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes entretiens</button>
           <button onClick={() => setView('profile')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
           <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
           <button onClick={() => setView('publish')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'publish' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Publier une offre</button>
@@ -174,6 +212,8 @@ export const EmploymentModule: React.FC = () => {
 
       {view === 'applications' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4"><div className="flex items-center justify-between"><h2 className="font-bold text-lg text-[#102D3A]">Suivi de mes candidatures</h2><button onClick={() => void loadApplications()} className="text-xs font-semibold text-[#087F70] inline-flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> Actualiser</button></div>{applications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature à afficher. Connectez-vous puis postulez à une offre.</p> : applications.map(app => <div key={app.id} className="border-t border-slate-100 py-3 flex flex-wrap items-center justify-between gap-3"><div><div className="font-semibold text-sm">{app.jobTitle}</div><div className="text-xs text-slate-500">{app.organizationName} · {app.jobCity} · {new Date(app.submittedAt).toLocaleDateString()}</div></div><div className="flex items-center gap-2"><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span>{['SUBMITTED','REVIEWING','SHORTLISTED','INTERVIEW'].includes(app.status) && <button disabled={busy} onClick={() => void withdrawApplication(app.id)} className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50">Retirer</button>}</div></div>)}</section>}
 
+      {view === 'interviews' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4"><div className="flex items-center justify-between"><h2 className="font-bold text-lg text-[#102D3A]">Mes entretiens</h2><button onClick={() => void loadInterviews()} className="text-xs font-semibold text-[#087F70]">Actualiser</button></div>{interviews.length === 0 ? <p className="text-sm text-slate-500">Aucune invitation à un entretien pour le moment.</p> : interviews.map(interview => <article key={interview.id} className="rounded-xl border border-slate-200 p-4 space-y-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-bold text-sm">{interview.jobTitle}</h3><p className="text-xs text-slate-500">{interview.organizationName} · {new Date(interview.startsAt).toLocaleString()} ({interview.timezone})</p><p className="text-xs text-slate-600 mt-1">{interview.mode} · {interview.locationOrUrl || 'Modalités communiquées par l’entreprise'}</p></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{interview.candidateResponse}</span></div>{interview.status === 'SCHEDULED' && interview.candidateResponse === 'PENDING' && <div className="flex gap-2"><button onClick={() => void respondToInterview(interview.id,'CONFIRMED')} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">Confirmer</button><button onClick={() => void respondToInterview(interview.id,'DECLINED')} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold">Décliner</button></div>}{interview.candidateMessage && <p className="text-xs text-slate-500">{interview.candidateMessage}</p>}</article>)}</section>}
+
       {view === 'profile' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4"><div><h2 className="font-bold text-lg text-[#102D3A]">Mon profil professionnel</h2><p className="text-sm text-slate-500 mt-1">Maîtrisez les informations visibles par les employeurs.</p></div><form onSubmit={saveCandidate} className="grid sm:grid-cols-2 gap-3">
         <input value={candidate.headline} onChange={e => setCandidate({...candidate,headline:e.target.value})} maxLength={160} placeholder="Titre professionnel (ex. Comptable senior)" className="sm:col-span-2 rounded-lg border border-slate-300 px-3 py-2.5 text-sm" />
         <input value={candidate.city} onChange={e => setCandidate({...candidate,city:e.target.value})} maxLength={120} placeholder="Ville de résidence" className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm" />
@@ -185,7 +225,7 @@ export const EmploymentModule: React.FC = () => {
       </form><p className="text-xs text-slate-500">Le CV et les justificatifs seront ajoutés dans une prochaine tranche avec stockage privé, contrôle de type de fichier et analyse antivirus. Aucun document n'est rendu public ici.</p></section>}
 
       {view === 'recruiter' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div className="flex items-center justify-between gap-2"><div><h2 className="font-bold text-lg text-[#102D3A]">Tableau de recrutement</h2><p className="text-sm text-slate-500">Offres et candidatures de votre organisation.</p></div><button onClick={() => void loadEmployerJobs()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>{employerJobs.length === 0 ? <p className="text-sm text-slate-500">Aucune offre pour cette entreprise.</p> : <div className="grid md:grid-cols-2 gap-3">{employerJobs.map(job => <button key={job.id} onClick={() => void loadJobApplications(job.id)} className={`text-left rounded-xl border p-4 ${selectedJobId === job.id ? 'border-[#087F70] bg-emerald-50' : 'border-slate-200'}`}><div className="font-bold text-sm">{job.title}</div><div className="text-xs text-slate-500 mt-1">{job.city} · {job.status} · {job.referenceCode}</div><div className="flex flex-wrap gap-2 mt-3">{Object.entries(job.applicationCounts || {}).map(([status,count]) => <span key={status} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{status}: {String(count)}</span>)}</div></button>)}</div>}
-        {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}<div className="flex flex-wrap gap-2">{(app.status === 'SUBMITTED' ? ['REVIEWING','REJECTED'] : app.status === 'REVIEWING' ? ['SHORTLISTED','INTERVIEW','REJECTED'] : app.status === 'SHORTLISTED' ? ['INTERVIEW','OFFER','REJECTED'] : app.status === 'INTERVIEW' ? ['OFFER','REJECTED'] : app.status === 'OFFER' ? ['HIRED','REJECTED'] : []).map(next => <button key={next} onClick={() => void changeApplicationStatus(app.id,next)} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">{next === 'REVIEWING' ? 'Examiner' : next === 'SHORTLISTED' ? 'Présélectionner' : next === 'INTERVIEW' ? 'Entretien' : next === 'OFFER' ? 'Proposer embauche' : next === 'HIRED' ? 'Recruté' : 'Refuser'}</button>)}</div></article>)}</div>}
+        {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}<div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div><div className="flex flex-wrap gap-2">{(app.status === 'SUBMITTED' ? ['REVIEWING','REJECTED'] : app.status === 'REVIEWING' ? ['SHORTLISTED','INTERVIEW','REJECTED'] : app.status === 'SHORTLISTED' ? ['INTERVIEW','OFFER','REJECTED'] : app.status === 'INTERVIEW' ? ['OFFER','REJECTED'] : app.status === 'OFFER' ? ['HIRED','REJECTED'] : []).map(next => <button key={next} onClick={() => void changeApplicationStatus(app.id,next)} className="rounded-lg bg-[#087F70] text-white px-3 py-2 text-xs font-bold">{next === 'REVIEWING' ? 'Examiner' : next === 'SHORTLISTED' ? 'Présélectionner' : next === 'INTERVIEW' ? 'Entretien' : next === 'OFFER' ? 'Proposer embauche' : next === 'HIRED' ? 'Recruté' : 'Refuser'}</button>)}</div></article>)}</div>}
       </section>}
 
       {view === 'publish' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div><h2 className="font-bold text-lg text-[#102D3A]">Publier une offre d’emploi</h2><p className="text-sm text-slate-500 mt-1">{organization ? `Entreprise : ${organization.name}` : 'Un espace entreprise est requis pour publier.'}</p></div>{!organization ? <a href="/enterprise" className="inline-flex rounded-lg bg-[#087F70] text-white px-4 py-2.5 text-sm font-bold">Créer mon espace entreprise</a> : <form onSubmit={publish} className="grid sm:grid-cols-2 gap-3">
