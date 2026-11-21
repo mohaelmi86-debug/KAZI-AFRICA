@@ -718,6 +718,43 @@ export const jobApplications = pgTable(
   ]
 );
 
+export const employmentOffers = pgTable(
+  'employment_offers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    jobPostId: uuid('job_post_id').references(() => jobPosts.id, { onDelete: 'cascade' }).notNull(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'cascade' }).notNull(),
+    countryId: uuid('country_id').references(() => countries.id).notNull(),
+    version: integer('version').notNull(),
+    status: text('status').notNull().default('SENT'), // SENT | ACCEPTED | DECLINED | WITHDRAWN | SUPERSEDED | EXPIRED
+    jobTitleSnapshot: text('job_title_snapshot').notNull(),
+    contractType: text('contract_type').notNull(),
+    salaryAmount: numeric('salary_amount', { precision: 14, scale: 2 }).notNull(),
+    salaryCurrency: text('salary_currency').notNull(),
+    payFrequency: text('pay_frequency').notNull(),
+    startDate: text('start_date').notNull(),
+    workLocation: text('work_location').notNull(),
+    weeklyHours: numeric('weekly_hours', { precision: 5, scale: 2 }),
+    probationDays: integer('probation_days'),
+    benefits: text('benefits'),
+    additionalConditions: text('additional_conditions'),
+    localLawNotice: text('local_law_notice'),
+    expiresAt: timestamp('expires_at').notNull(),
+    candidateResponseAt: timestamp('candidate_response_at'),
+    candidateResponseNote: text('candidate_response_note'),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('employment_offers_application_version_unique_idx').on(table.applicationId, table.version),
+    index('employment_offers_candidate_status_idx').on(table.candidateProfileId, table.status, table.createdAt),
+    index('employment_offers_org_status_idx').on(table.organizationId, table.status, table.createdAt),
+  ]
+);
+
 export const candidateDocumentShares = pgTable(
   'candidate_document_shares',
   {
