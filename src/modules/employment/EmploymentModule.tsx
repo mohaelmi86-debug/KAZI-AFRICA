@@ -15,7 +15,7 @@ type Application = { id: string; status: string; submittedAt: string; jobTitle: 
 
 export const EmploymentModule: React.FC = () => {
   const { selectedCountryIso2 } = useApp();
-  const { firebaseUser, roles } = useAuth();
+  const { firebaseUser, roles, loading: authLoading } = useAuth();
   const isPlatformAdmin = roles.includes('SUPER_ADMIN') || roles.includes('LOCAL_ADMIN');
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<any>(null);
@@ -77,7 +77,20 @@ export const EmploymentModule: React.FC = () => {
     } catch (e: any) { setError(e.message || 'Connectez-vous pour consulter vos candidatures.'); }
   };
 
-  useEffect(() => { void loadWorkspace(); void loadCandidate(); }, []);
+  useEffect(() => {
+    if (authLoading) return;
+    if (firebaseUser) {
+      void loadWorkspace();
+      void loadCandidate();
+      return;
+    }
+    setOrganization(null);
+    setEmployerJobs([]);
+    setJobApplications([]);
+    setApplications([]);
+    setInterviews([]);
+    setCandidateDocuments([]);
+  }, [authLoading, firebaseUser]);
 
   const loadInterviews = async () => {
     try {
