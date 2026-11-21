@@ -22,7 +22,7 @@ export const EmploymentModule: React.FC = () => {
   const [coverLetter, setCoverLetter] = useState('');
   const [applications, setApplications] = useState<Application[]>([]);
   const [employmentOffers, setEmploymentOffers] = useState<any[]>([]);
-  const [offerDraft, setOfferDraft] = useState({ salaryAmount: '', payFrequency: 'MONTH', startDate: '', workLocation: '', weeklyHours: '40', probationDays: '', benefits: '', additionalConditions: '', localLawNotice: '', expiresInDays: '7' });
+  const [offerDraft, setOfferDraft] = useState({ salaryAmount: '', salaryBasis: 'GROSS', payFrequency: 'MONTH', startDate: '', workLocation: '', weeklyHours: '40', probationDays: '', benefits: '', additionalConditions: '', localLawNotice: '', expiresInDays: '7' });
   const [applicationHistories, setApplicationHistories] = useState<Record<string, any[]>>({});
   const [expandedApplicationHistories, setExpandedApplicationHistories] = useState<Record<string, boolean>>({});
   const [candidateDocuments, setCandidateDocuments] = useState<any[]>([]);
@@ -553,7 +553,7 @@ export const EmploymentModule: React.FC = () => {
         {employmentOffers.length === 0 ? <p className="text-sm text-slate-500">Aucune proposition reçue pour le moment.</p> : employmentOffers.map((offer: any) => <article key={offer.id} className="rounded-xl border border-slate-200 p-4 space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-bold text-sm text-[#102D3A]">{offer.jobTitleSnapshot}</h3><p className="text-xs text-slate-500">{offer.organizationName} · {offer.countryName} · Version {offer.version}</p></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{offer.status}</span></div>
           <div className="grid sm:grid-cols-2 gap-2 text-xs text-slate-700">
-            <div>Rémunération : <strong>{Number(offer.salaryAmount).toLocaleString('fr-FR')} {offer.salaryCurrency} / {offer.payFrequency}</strong></div>
+            <div>Rémunération ({offer.salaryBasis === 'GROSS' ? 'brute' : 'nette'}) : <strong>{Number(offer.salaryAmount).toLocaleString('fr-FR')} {offer.salaryCurrency} / {offer.payFrequency}</strong></div>
             <div>Début prévu : <strong>{offer.startDate}</strong></div>
             <div>Contrat : <strong>{offer.contractType}</strong></div><div>Lieu : <strong>{offer.workLocation}</strong></div>
             {offer.weeklyHours && <div>Temps de travail : <strong>{offer.weeklyHours} h/semaine</strong></div>}
@@ -625,6 +625,7 @@ export const EmploymentModule: React.FC = () => {
                   <div className="text-xs font-bold text-slate-700">Proposition d’embauche</div>
                   <div className="grid sm:grid-cols-2 gap-2">
                     <label className="text-[11px] text-slate-600">Salaire proposé<input type="number" min="0.01" step="0.01" value={offerDraft.salaryAmount} onChange={e => setOfferDraft({...offerDraft,salaryAmount:e.target.value})} placeholder="Montant" className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /></label>
+                    <label className="text-[11px] text-slate-600">Base salariale<select value={offerDraft.salaryBasis} onChange={e => setOfferDraft({...offerDraft,salaryBasis:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="GROSS">Brut</option><option value="NET">Net</option></select></label>
                     <label className="text-[11px] text-slate-600">Périodicité<select value={offerDraft.payFrequency} onChange={e => setOfferDraft({...offerDraft,payFrequency:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="HOUR">Par heure</option><option value="WEEK">Par semaine</option><option value="MONTH">Par mois</option><option value="YEAR">Par an</option></select></label>
                     <label className="text-[11px] text-slate-600">Date de début<input type="date" value={offerDraft.startDate} onChange={e => setOfferDraft({...offerDraft,startDate:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /></label>
                     <label className="text-[11px] text-slate-600">Lieu de travail<input maxLength={240} value={offerDraft.workLocation} onChange={e => setOfferDraft({...offerDraft,workLocation:e.target.value})} placeholder="Ville / adresse / télétravail" className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /></label>
