@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "employment:scan-documents": "tsx scripts/scan-employment-documents.ts"
+    "employment:scan-documents": "tsx scripts/scan-employment-documents.ts",
+    "test:employment:scanner": "node --import tsx --test tests/clamavScanner.test.ts"
   },
   "dependencies": {
     "@google/genai": "^3.4.0",
