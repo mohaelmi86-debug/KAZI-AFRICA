@@ -177,3 +177,24 @@ Réutiliser le design system, les traductions FR/EN/PT/AR, les composants respon
 7. Validation conformité pays par pays, tests de sécurité et préparation production.
 
 Livrer par petites pull requests relues. Ne pas fusionner dans main avant migrations, vérification des types, tests, revue sécurité et tests de non-régression.
+
+---
+
+## 11. État d'implémentation — première tranche technique
+
+La première tranche fonctionnelle est maintenant présente dans la branche de développement :
+
+- Tables Drizzle dédiées : `job_posts`, `candidate_profiles`, `job_applications`, `job_application_events`.
+- Migration SQL versionnée : `drizzle/0001_employment_os.sql`.
+- API : recherche publique d'offres, création d'offres en brouillon, publication, dépôt de candidature, consultation des candidatures par le candidat, consultation du pipeline par l'entreprise et transitions de statut contrôlées.
+- Interface initiale : `/employment`, avec recherche, candidature, suivi candidat et formulaire de publication.
+- Navigation : entrée « Emploi & recrutement » ajoutée au pied de page.
+- Contrôle pays : une offre ne peut être créée/publiée/candidaturée que si le pays est actif et si le module `employment` y est explicitement activé.
+- Contrôle organisation : seules les personnes propriétaires ou membres actifs autorisés de l'organisation peuvent publier et consulter les candidatures de ses offres.
+- Audit : création/publication d'offres, candidatures et changements de statut sont journalisés.
+
+### Limites connues de cette tranche
+
+Cette livraison est une fondation opérationnelle, pas encore un ATS complet. Restent notamment à développer : gestion complète du profil et des CV avec stockage privé et antivirus, onboarding/vérification employeur, invitation et rôles RH détaillés, pagination/tri avancés, modération, entretiens, évaluations, offres d'embauche contractuelles, notifications, alertes, consentements et demandes RGPD/locales, analytics, abonnements, marque blanche, traductions complètes FR/EN/PT/AR et activation administrable du module pays.
+
+La migration doit être appliquée à l'environnement cible avant utilisation. Les contrôles de compilation, tests automatisés, tests d'isolation multi-tenant et tests de non-régression doivent être exécutés avant fusion dans `main`.
