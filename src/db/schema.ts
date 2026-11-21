@@ -282,6 +282,7 @@ export const verifications = pgTable(
     status: text('status').notNull().default('PENDING'), // PENDING | APPROVED | REJECTED
     reviewerUid: text('reviewer_uid'),
     reviewNote: text('review_note'),
+    reviewEvidenceReference: text('review_evidence_reference'),
     submittedAt: timestamp('submitted_at').defaultNow().notNull(),
     reviewedAt: timestamp('reviewed_at'),
   },
