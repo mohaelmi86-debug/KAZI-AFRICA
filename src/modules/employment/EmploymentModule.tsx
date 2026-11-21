@@ -31,6 +31,7 @@ export const EmploymentModule: React.FC = () => {
   const [interviews, setInterviews] = useState<any[]>([]);
   const [interviewForm, setInterviewForm] = useState({ startsAt: '', endsAt: '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', mode: 'VIDEO', locationOrUrl: '' });
   const [organization, setOrganization] = useState<any>(null);
+  const [availableOrganizations, setAvailableOrganizations] = useState<any[]>([]);
   const [employerVerification, setEmployerVerification] = useState<any>(null);
   const [verificationForm, setVerificationForm] = useState({ legalName: '', registrationNumber: '', contactName: '', contactEmail: '' });
   const [verificationLoading, setVerificationLoading] = useState(false);
@@ -71,11 +72,22 @@ export const EmploymentModule: React.FC = () => {
 
   useEffect(() => { void loadJobs(); }, [selectedCountryIso2]);
 
-  const loadWorkspace = async () => {
+  const loadWorkspace = async (organizationId?: string) => {
     try {
-      const result = await apiFetch<any>('/api/enterprise/overview');
+      const qs = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : '';
+      const result = await apiFetch<any>(`/api/enterprise/overview${qs}`);
+      setAvailableOrganizations(result.organizations || []);
       setOrganization(result.organization || null);
-    } catch { setOrganization(null); }
+      setEmployerJobs([]);
+      setJobApplications([]);
+      setEmployerInterviews([]);
+      setApplicationDocuments({});
+      setSelectedJobId('');
+      setEmployerVerification(null);
+    } catch {
+      setOrganization(null);
+      setAvailableOrganizations([]);
+    }
   };
 
   const loadApplications = async () => {
@@ -397,6 +409,12 @@ export const EmploymentModule: React.FC = () => {
         </div>
       </header>
 
+      {firebaseUser && availableOrganizations.length > 1 && <div className="rounded-xl border border-slate-200 bg-white p-3 flex flex-wrap items-center gap-3">
+        <label htmlFor="employment-organization" className="text-xs font-bold text-slate-600">Espace entreprise actif</label>
+        <select id="employment-organization" value={organization?.id || ''} onChange={e => { void loadWorkspace(e.target.value); }} className="min-w-[220px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+          {availableOrganizations.map((org: any) => <option key={org.id} value={org.id}>{org.name}</option>)}
+        </select>
+      </div>}
       {notice && <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">{notice}</div>}
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
 
