@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -282,6 +282,7 @@ export const verifications = pgTable(
     status: text('status').notNull().default('PENDING'), // PENDING | APPROVED | REJECTED
     reviewerUid: text('reviewer_uid'),
     reviewNote: text('review_note'),
+    reviewEvidenceReference: text('review_evidence_reference'),
     submittedAt: timestamp('submitted_at').defaultNow().notNull(),
     reviewedAt: timestamp('reviewed_at'),
   },
@@ -479,6 +480,7 @@ export const notifications = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     profileId: uuid('profile_id').references(() => profiles.id, { onDelete: 'cascade' }).notNull(),
     type: text('type').notNull(),
+    eventKey: text('event_key'),
     titleFr: text('title_fr').notNull(),
     titleEn: text('title_en').notNull(),
     titleAr: text('title_ar').notNull(),
@@ -490,7 +492,10 @@ export const notifications = pgTable(
     isRead: boolean('is_read').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
-  (table) => [index('notifications_profile_idx').on(table.profileId)]
+  (table) => [
+    index('notifications_profile_idx').on(table.profileId),
+    uniqueIndex('notifications_event_key_unique_idx').on(table.eventKey),
+  ]
 );
 
 export const disputes = pgTable(
@@ -619,6 +624,284 @@ export const supportTickets = pgTable('support_tickets', {
   status: text('status').notNull().default('OPEN'), // OPEN | IN_PROGRESS | CLOSED
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+
+ // ============================================================================
+ // EMPLOYMENT OS — RECRUTEMENT SALARIÉ (distinct des missions de prestation)
+ // ============================================================================
+export const jobPosts = pgTable(
+  'job_posts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    countryId: uuid('country_id').references(() => countries.id).notNull(),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    referenceCode: text('reference_code').notNull().unique(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    department: text('department'),
+    contractType: text('contract_type').notNull(),
+    workMode: text('work_mode').notNull().default('ONSITE'),
+    city: text('city').notNull(),
+    salaryMin: numeric('salary_min', { precision: 14, scale: 2 }),
+    salaryMax: numeric('salary_max', { precision: 14, scale: 2 }),
+    salaryCurrency: text('salary_currency').notNull(),
+    salaryPeriod: text('salary_period').notNull().default('MONTH'),
+    experienceLevel: text('experience_level'),
+    requiredSkills: jsonb('required_skills').$type<string[]>().notNull().default([]),
+    applicationDeadline: timestamp('application_deadline'),
+    status: text('status').notNull().default('DRAFT'), // DRAFT | PUBLISHED | PAUSED | CLOSED | EXPIRED
+    publishedAt: timestamp('published_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('job_posts_country_status_created_idx').on(table.countryId, table.status, table.createdAt),
+    index('job_posts_org_status_idx').on(table.organizationId, table.status),
+  ]
+);
+
+export const candidateProfiles = pgTable(
+  'candidate_profiles',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    profileId: uuid('profile_id').references(() => profiles.id, { onDelete: 'cascade' }).notNull().unique(),
+    headline: text('headline'),
+    summary: text('summary'),
+    city: text('city'),
+    countryIso2: text('country_iso2').notNull(),
+    skills: jsonb('skills').$type<string[]>().notNull().default([]),
+    experienceYears: integer('experience_years').notNull().default(0),
+    cvStorageRef: text('cv_storage_ref'),
+    visibility: text('visibility').notNull().default('PRIVATE'), // PRIVATE | EMPLOYERS_WITH_APPLICATION | PUBLIC
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [index('candidate_profiles_country_idx').on(table.countryIso2)]
+);
+
+export const candidateDocuments = pgTable(
+  'candidate_documents',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'cascade' }).notNull(),
+    documentType: text('document_type').notNull(), // CV | CERTIFICATE | DIPLOMA | OTHER
+    originalFileName: text('original_file_name').notNull(),
+    storagePath: text('storage_path').notNull().unique(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    sha256: text('sha256').notNull(),
+    scanStatus: text('scan_status').notNull().default('QUARANTINED'), // QUARANTINED | SCANNING | CLEAN | REJECTED | DELETED
+    uploadedAt: timestamp('uploaded_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('candidate_documents_candidate_uploaded_idx').on(table.candidateProfileId, table.uploadedAt),
+    index('candidate_documents_scan_status_idx').on(table.scanStatus),
+  ]
+);
+
+export const jobApplications = pgTable(
+  'job_applications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    jobPostId: uuid('job_post_id').references(() => jobPosts.id, { onDelete: 'cascade' }).notNull(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'cascade' }).notNull(),
+    coverLetter: text('cover_letter'),
+    status: text('status').notNull().default('SUBMITTED'), // SUBMITTED | REVIEWING | SHORTLISTED | INTERVIEW | OFFER | HIRED | REJECTED | WITHDRAWN
+    submittedAt: timestamp('submitted_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_applications_job_candidate_unique_idx').on(table.jobPostId, table.candidateProfileId),
+    index('job_applications_job_status_idx').on(table.jobPostId, table.status),
+    index('job_applications_candidate_idx').on(table.candidateProfileId, table.submittedAt),
+  ]
+);
+
+export const employmentOffers = pgTable(
+  'employment_offers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    jobPostId: uuid('job_post_id').references(() => jobPosts.id, { onDelete: 'cascade' }).notNull(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'cascade' }).notNull(),
+    countryId: uuid('country_id').references(() => countries.id).notNull(),
+    version: integer('version').notNull(),
+    status: text('status').notNull().default('SENT'), // SENT | ACCEPTED | DECLINED | WITHDRAWN | SUPERSEDED | EXPIRED
+    jobTitleSnapshot: text('job_title_snapshot').notNull(),
+    contractType: text('contract_type').notNull(),
+    salaryAmount: numeric('salary_amount', { precision: 14, scale: 2 }).notNull(),
+    salaryBasis: text('salary_basis').notNull().default('GROSS'),
+    salaryCurrency: text('salary_currency').notNull(),
+    payFrequency: text('pay_frequency').notNull(),
+    startDate: text('start_date').notNull(),
+    workLocation: text('work_location').notNull(),
+    weeklyHours: numeric('weekly_hours', { precision: 5, scale: 2 }),
+    probationDays: integer('probation_days'),
+    benefits: text('benefits'),
+    additionalConditions: text('additional_conditions'),
+    localLawNotice: text('local_law_notice'),
+    expiresAt: timestamp('expires_at').notNull(),
+    candidateResponseAt: timestamp('candidate_response_at'),
+    candidateResponseNote: text('candidate_response_note'),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('employment_offers_application_version_unique_idx').on(table.applicationId, table.version),
+    uniqueIndex('employment_offers_one_sent_per_application_idx').on(table.applicationId).where(sql`status = 'SENT'`),
+    index('employment_offers_candidate_status_idx').on(table.candidateProfileId, table.status, table.createdAt),
+    index('employment_offers_org_status_idx').on(table.organizationId, table.status, table.createdAt),
+  ]
+);
+
+export const employmentContractTemplates = pgTable(
+  'employment_contract_templates',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    countryId: uuid('country_id').references(() => countries.id, { onDelete: 'cascade' }).notNull(),
+    language: text('language').notNull(),
+    contractType: text('contract_type').notNull(),
+    version: integer('version').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    status: text('status').notNull().default('DRAFT'), // DRAFT | REVIEW | APPROVED | RETIRED
+    legalReviewReference: text('legal_review_reference'),
+    validatedByProfileId: uuid('validated_by_profile_id').references(() => profiles.id),
+    validatedAt: timestamp('validated_at'),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('employment_contract_templates_country_lang_type_version_unique_idx')
+      .on(table.countryId, table.language, table.contractType, table.version),
+    index('employment_contract_templates_country_status_idx').on(table.countryId, table.status),
+  ]
+);
+
+export const employmentContracts = pgTable(
+  'employment_contracts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    offerId: uuid('offer_id').references(() => employmentOffers.id, { onDelete: 'restrict' }).notNull().unique(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'restrict' }).notNull(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'restrict' }).notNull(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'restrict' }).notNull(),
+    countryId: uuid('country_id').references(() => countries.id).notNull(),
+    templateId: uuid('template_id').references(() => employmentContractTemplates.id, { onDelete: 'restrict' }).notNull(),
+    templateVersion: integer('template_version').notNull(),
+    language: text('language').notNull(),
+    status: text('status').notNull().default('DRAFT'), // DRAFT | PENDING_SIGNATURE | PARTIALLY_SIGNED | SIGNED | ACTIVE | AMENDED | TERMINATED | EXPIRED | CANCELLED
+    termsSnapshot: jsonb('terms_snapshot').$type<Record<string, unknown>>().notNull(),
+    documentStoragePath: text('document_storage_path'),
+    documentSha256: text('document_sha256'),
+    documentSizeBytes: integer('document_size_bytes'),
+    documentGeneratedAt: timestamp('document_generated_at'),
+    documentVersion: integer('document_version').notNull().default(0),
+    signatureProvider: text('signature_provider'),
+    providerEnvelopeId: text('provider_envelope_id'),
+    signedAt: timestamp('signed_at'),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('employment_contracts_org_status_idx').on(table.organizationId, table.status, table.createdAt),
+    index('employment_contracts_candidate_status_idx').on(table.candidateProfileId, table.status, table.createdAt),
+  ]
+);
+
+export const candidateDocumentShares = pgTable(
+  'candidate_document_shares',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    documentId: uuid('document_id').references(() => candidateDocuments.id, { onDelete: 'cascade' }).notNull(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    consentedAt: timestamp('consented_at').defaultNow().notNull(),
+    revokedAt: timestamp('revoked_at'),
+  },
+  (table) => [
+    uniqueIndex('candidate_document_shares_document_application_unique_idx').on(table.documentId, table.applicationId),
+    index('candidate_document_shares_application_idx').on(table.applicationId),
+  ]
+);
+
+export const jobApplicationEvents = pgTable('job_application_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+  actorProfileId: uuid('actor_profile_id').references(() => profiles.id),
+  fromStatus: text('from_status'),
+  toStatus: text('to_status').notNull(),
+  note: text('note'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [index('job_application_events_application_created_idx').on(table.applicationId, table.createdAt)]);
+
+export const jobInterviews = pgTable(
+  'job_interviews',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    scheduledByProfileId: uuid('scheduled_by_profile_id').references(() => profiles.id).notNull(),
+    startsAt: timestamp('starts_at').notNull(),
+    endsAt: timestamp('ends_at').notNull(),
+    timezone: text('timezone').notNull(),
+    mode: text('mode').notNull(), // VIDEO | PHONE | ONSITE
+    locationOrUrl: text('location_or_url'),
+    candidateResponse: text('candidate_response').notNull().default('PENDING'), // PENDING | CONFIRMED | DECLINED
+    status: text('status').notNull().default('SCHEDULED'), // SCHEDULED | COMPLETED | CANCELLED
+    candidateMessage: text('candidate_message'),
+    internalNotes: text('internal_notes'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [index('job_interviews_application_start_idx').on(table.applicationId, table.startsAt)]
+);
+
+export const jobInterviewEvaluations = pgTable(
+  'job_interview_evaluations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    interviewId: uuid('interview_id').references(() => jobInterviews.id, { onDelete: 'cascade' }).notNull(),
+    reviewerProfileId: uuid('reviewer_profile_id').references(() => profiles.id).notNull(),
+    score: integer('score').notNull(),
+    recommendation: text('recommendation').notNull(), // STRONG_YES | YES | HOLD | NO
+    strengths: text('strengths').notNull().default(''),
+    concerns: text('concerns').notNull().default(''),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_interview_evaluations_interview_reviewer_unique_idx').on(table.interviewId, table.reviewerProfileId),
+    index('job_interview_evaluations_interview_idx').on(table.interviewId),
+  ]
+);
+
+
+export const employerVerifications = pgTable(
+  'employer_verifications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull().unique(),
+    legalName: text('legal_name').notNull(),
+    registrationNumber: text('registration_number').notNull(),
+    contactName: text('contact_name').notNull(),
+    contactEmail: text('contact_email').notNull(),
+    status: text('status').notNull().default('PENDING'), // PENDING | VERIFIED | REJECTED | MORE_INFO_REQUIRED
+    submittedAt: timestamp('submitted_at').defaultNow().notNull(),
+    reviewedByProfileId: uuid('reviewed_by_profile_id').references(() => profiles.id),
+    reviewedAt: timestamp('reviewed_at'),
+    reviewNote: text('review_note'),
+    reviewEvidenceReference: text('review_evidence_reference'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('employer_verifications_status_submitted_idx').on(table.status, table.submittedAt),
+  ]
+);
 
 // ============================================================================
 // RELATIONS DRIZZLE

@@ -4,8 +4,10 @@ import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { createServer as createViteServer } from 'vite';
+import { getPrivateEmploymentBucket } from './src/lib/firebase-admin.ts';
+import { renderEmploymentContractDraftPdf } from './src/server/employmentContractPdf.ts';
 import { validateRuntimeEnvironment } from './src/config/env.ts';
 import { db } from './src/db/index.ts';
 import { ensureDatabaseSeeded } from './src/db/seed.ts';
@@ -22,7 +24,19 @@ import {
   countryPaymentProviders,
   disputes,
   enrollments,
+  employerVerifications,
+  employmentOffers,
+  employmentContractTemplates,
+  employmentContracts,
   evaluations,
+  jobPosts,
+  candidateProfiles,
+  candidateDocuments,
+  candidateDocumentShares,
+  jobApplications,
+  jobApplicationEvents,
+  jobInterviews,
+  jobInterviewEvaluations,
   messages,
   missions,
   notifications,
@@ -88,6 +102,52 @@ function isValidUuid(value: unknown): value is string {
 
 function isPgUniqueViolation(err: any): boolean {
   return err?.code === '23505' || err?.cause?.code === '23505';
+}
+
+type EmploymentNotificationContent = {
+  type: string;
+  eventKey: string;
+  titleFr: string; titleEn: string; titleAr: string; titlePt: string;
+  bodyFr: string; bodyEn: string; bodyAr: string; bodyPt: string;
+};
+
+async function sendEmploymentNotification(profileId: string, content: EmploymentNotificationContent): Promise<void> {
+  try {
+    await db.insert(notifications).values({
+      profileId,
+      type: content.type,
+      eventKey: `${content.eventKey}:${profileId}`,
+      titleFr: content.titleFr, titleEn: content.titleEn, titleAr: content.titleAr, titlePt: content.titlePt,
+      bodyFr: content.bodyFr, bodyEn: content.bodyEn, bodyAr: content.bodyAr, bodyPt: content.bodyPt,
+    }).onConflictDoNothing({ target: notifications.eventKey });
+  } catch (err) {
+    console.error('Employment notification delivery failed:', err);
+  }
+}
+
+async function notifyEmploymentOrganization(organizationId: string, content: EmploymentNotificationContent): Promise<void> {
+  try {
+    const [organization] = await db.select({ ownerProfileId: organizations.ownerProfileId })
+      .from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    if (!organization) return;
+    const members = await db.select({ profileId: orgMembers.profileId })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.organizationId, organizationId), eq(orgMembers.isActive, true)));
+    const recipients = [...new Set([organization.ownerProfileId, ...members.map((member) => member.profileId)])];
+    await Promise.all(recipients.map((profileId) => sendEmploymentNotification(profileId, content)));
+  } catch (err) {
+    console.error('Employment organization notification failed:', err);
+  }
+}
+
+async function notifyEmploymentCandidate(candidateProfileId: string, content: EmploymentNotificationContent): Promise<void> {
+  try {
+    const [candidate] = await db.select({ profileId: candidateProfiles.profileId })
+      .from(candidateProfiles).where(eq(candidateProfiles.id, candidateProfileId)).limit(1);
+    if (candidate) await sendEmploymentNotification(candidate.profileId, content);
+  } catch (err) {
+    console.error('Employment candidate notification failed:', err);
+  }
 }
 
 const webhookReplayCache = new Map<string, number>();
@@ -895,6 +955,1674 @@ app.put(
     }
   }
 );
+
+
+/* ============================================================================
+ * EMPLOYMENT OS — offres d'emploi et candidatures
+ * Le recrutement salarié reste séparé des missions de prestation.
+ * L'activation est contrôlée par pays via country_modules.module_key='employment'.
+ * ========================================================================== */
+async function isEmploymentEnabled(countryId: string): Promise<boolean> {
+  const [module] = await db.select({ enabled: countryModules.enabled })
+    .from(countryModules)
+    .where(and(
+      eq(countryModules.countryId, countryId),
+      eq(countryModules.moduleKey, 'employment')
+    ))
+    .limit(1);
+  return module?.enabled === true;
+}
+
+async function canManageEmploymentOrg(organizationId: string, profileId: string, roles: string[]) {
+  if (roles.includes('SUPER_ADMIN')) return true;
+  const [org] = await db.select().from(organizations)
+    .where(eq(organizations.id, organizationId)).limit(1);
+  if (!org) return false;
+  if (org.ownerProfileId === profileId) return true;
+  const [member] = await db.select().from(orgMembers).where(and(
+    eq(orgMembers.organizationId, organizationId),
+    eq(orgMembers.profileId, profileId),
+    eq(orgMembers.isActive, true)
+  )).limit(1);
+  return !!member && ['OWNER', 'MANAGER', 'HR_ADMIN', 'RECRUITER'].includes(member.memberRole);
+}
+
+
+app.get('/api/employment/employer/verification', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const organizationId = String(req.query.organizationId || '');
+    if (!isValidUuid(organizationId)) return res.status(400).json({ error: 'Invalid organization ID' });
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) return res.status(403).json({ error: 'Access denied' });
+    const [verification] = await db.select({
+      id: employerVerifications.id, legalName: employerVerifications.legalName,
+      registrationNumber: employerVerifications.registrationNumber, contactName: employerVerifications.contactName,
+      contactEmail: employerVerifications.contactEmail, status: employerVerifications.status,
+      submittedAt: employerVerifications.submittedAt, reviewedAt: employerVerifications.reviewedAt,
+      reviewNote: employerVerifications.reviewNote,
+    }).from(employerVerifications).where(eq(employerVerifications.organizationId, organizationId)).limit(1);
+    res.json({ verification: verification || null });
+  } catch (err) {
+    console.error('Employer verification read error:', err);
+    res.status(500).json({ error: 'Unable to load employer verification' });
+  }
+});
+
+app.post('/api/employment/employer/verification', requireAuth, rateLimit(8, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const body = req.body || {};
+    const organizationId = String(body.organizationId || '');
+    const legalName = String(body.legalName || '').trim().slice(0, 180);
+    const registrationNumber = String(body.registrationNumber || '').trim().slice(0, 100);
+    const contactName = String(body.contactName || '').trim().slice(0, 120);
+    const contactEmail = String(body.contactEmail || '').trim().toLowerCase().slice(0, 254);
+    if (!isValidUuid(organizationId) || legalName.length < 2 || registrationNumber.length < 3 ||
+        contactName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+      return res.status(400).json({ error: 'Legal name, registration number and valid contact details are required' });
+    }
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) return res.status(403).json({ error: 'Access denied' });
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+    const [existing] = await db.select().from(employerVerifications)
+      .where(eq(employerVerifications.organizationId, organizationId)).limit(1);
+    if (existing?.status === 'VERIFIED') return res.status(409).json({ error: 'This organization is already verified' });
+    const values = {
+      legalName, registrationNumber, contactName, contactEmail, status: 'PENDING',
+      submittedAt: new Date(), reviewedByProfileId: null, reviewedAt: null, reviewNote: null, updatedAt: new Date(),
+    };
+    const [verification] = existing
+      ? await db.update(employerVerifications).set(values).where(eq(employerVerifications.id, existing.id)).returning()
+      : await db.insert(employerVerifications).values({ organizationId, ...values }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: org.countryId ? (await db.select({ iso2: countries.iso2 }).from(countries).where(eq(countries.id, org.countryId)).limit(1))[0]?.iso2 : null,
+      action: 'EMPLOYMENT_EMPLOYER_VERIFICATION_SUBMITTED', entityType: 'employer_verification',
+      entityId: verification.id, details: { organizationId, status: 'PENDING' },
+    });
+    res.status(201).json({ verification });
+  } catch (err) {
+    console.error('Employer verification submit error:', err);
+    res.status(500).json({ error: 'Unable to submit employer verification' });
+  }
+});
+
+app.get('/api/employment/admin/employer-verifications', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const isSuperAdmin = ctx.roles.includes('SUPER_ADMIN');
+    if (!isSuperAdmin && !ctx.roles.includes('LOCAL_ADMIN')) return res.status(403).json({ error: 'Admin access required' });
+    const rows = await db.select({
+      id: employerVerifications.id, organizationId: employerVerifications.organizationId,
+      legalName: employerVerifications.legalName, registrationNumber: employerVerifications.registrationNumber,
+      contactName: employerVerifications.contactName, contactEmail: employerVerifications.contactEmail,
+      status: employerVerifications.status, submittedAt: employerVerifications.submittedAt,
+      countryIso2: countries.iso2, organizationName: organizations.name,
+    }).from(employerVerifications)
+      .innerJoin(organizations, eq(employerVerifications.organizationId, organizations.id))
+      .innerJoin(countries, eq(organizations.countryId, countries.id))
+      .where(isSuperAdmin ? undefined : inArray(countries.iso2, ctx.adminCountryIso2s.length ? ctx.adminCountryIso2s : ['__NO_COUNTRY__']))
+      .orderBy(desc(employerVerifications.submittedAt)).limit(100);
+    res.json({ verifications: rows });
+  } catch (err) {
+    console.error('Employer verification queue error:', err);
+    res.status(500).json({ error: 'Unable to load verification queue' });
+  }
+});
+
+app.patch('/api/employment/admin/employer-verifications/:id', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const id = String(req.params.id);
+    if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid verification ID' });
+    const action = String(req.body?.action || '').toUpperCase();
+    const note = String(req.body?.note || '').trim().slice(0, 2000);
+    const evidenceReference = String(req.body?.evidenceReference || '').trim().slice(0, 300);
+    if (!['VERIFY', 'REJECT', 'REQUEST_INFO'].includes(action)) return res.status(400).json({ error: 'Invalid review action' });
+    if (action === 'VERIFY' && evidenceReference.length < 5) return res.status(400).json({ error: 'An official registry or document evidence reference is required to verify an employer' });
+    const [record] = await db.select().from(employerVerifications).where(eq(employerVerifications.id, id)).limit(1);
+    if (!record) return res.status(404).json({ error: 'Verification not found' });
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, record.organizationId)).limit(1);
+    const [country] = org ? await db.select().from(countries).where(eq(countries.id, org.countryId)).limit(1) : [undefined];
+    const isSuperAdmin = ctx.roles.includes('SUPER_ADMIN');
+    if (!isSuperAdmin && (!ctx.roles.includes('LOCAL_ADMIN') || !country || !ctx.adminCountryIso2s.includes(country.iso2))) {
+      return res.status(403).json({ error: 'Country-scoped admin access denied' });
+    }
+    const status = action === 'VERIFY' ? 'VERIFIED' : action === 'REJECT' ? 'REJECTED' : 'MORE_INFO_REQUIRED';
+    const [updated] = await db.update(employerVerifications).set({
+      status, reviewNote: note || null, reviewEvidenceReference: action === 'VERIFY' ? evidenceReference : null, reviewedByProfileId: ctx.profileId, reviewedAt: new Date(), updatedAt: new Date(),
+    }).where(eq(employerVerifications.id, id)).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country?.iso2 || null, action: 'EMPLOYMENT_EMPLOYER_VERIFICATION_REVIEWED',
+      entityType: 'employer_verification', entityId: id, details: { organizationId: record.organizationId, status },
+    });
+    res.json({ verification: updated });
+  } catch (err) {
+    console.error('Employer verification review error:', err);
+    res.status(500).json({ error: 'Unable to review employer verification' });
+  }
+});
+
+
+app.get('/api/employment/jobs', rateLimit(90, 60_000), async (req, res) => {
+  try {
+    const countryIso2 = req.query.countryIso2 ? String(req.query.countryIso2).toUpperCase() : null;
+    const q = req.query.q ? String(req.query.q).trim().slice(0, 100) : '';
+    const city = req.query.city ? String(req.query.city).trim().slice(0, 80) : '';
+    const requestedContract = req.query.contractType ? String(req.query.contractType).toUpperCase() : '';
+    const requestedWorkMode = req.query.workMode ? String(req.query.workMode).toUpperCase() : '';
+    const allowedContracts = new Set(['PERMANENT', 'FIXED_TERM', 'TEMPORARY', 'PART_TIME', 'INTERNSHIP', 'APPRENTICESHIP', 'SEASONAL', 'GRADUATE', 'PUBLIC_SERVICE']);
+    const allowedWorkModes = new Set(['ONSITE', 'HYBRID', 'REMOTE']);
+    const contractType = allowedContracts.has(requestedContract) ? requestedContract : null;
+    const workMode = allowedWorkModes.has(requestedWorkMode) ? requestedWorkMode : null;
+    const now = new Date();
+    const rows = await db.select({
+      id: jobPosts.id,
+      referenceCode: jobPosts.referenceCode,
+      title: jobPosts.title,
+      description: jobPosts.description,
+      contractType: jobPosts.contractType,
+      workMode: jobPosts.workMode,
+      city: jobPosts.city,
+      salaryMin: jobPosts.salaryMin,
+      salaryMax: jobPosts.salaryMax,
+      salaryCurrency: jobPosts.salaryCurrency,
+      salaryPeriod: jobPosts.salaryPeriod,
+      experienceLevel: jobPosts.experienceLevel,
+      requiredSkills: jobPosts.requiredSkills,
+      applicationDeadline: jobPosts.applicationDeadline,
+      publishedAt: jobPosts.publishedAt,
+      organizationName: organizations.name,
+      countryIso2: countries.iso2,
+      countryName: countries.nameFr,
+    }).from(jobPosts)
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .innerJoin(countries, eq(jobPosts.countryId, countries.id))
+      .innerJoin(countryModules, and(
+        eq(countryModules.countryId, countries.id),
+        eq(countryModules.moduleKey, 'employment'),
+        eq(countryModules.enabled, true)
+      ))
+      .where(and(
+        eq(jobPosts.status, 'PUBLISHED'),
+        eq(countries.status, 'ACTIVE'),
+        countryIso2 ? eq(countries.iso2, countryIso2) : undefined,
+        contractType ? eq(jobPosts.contractType, contractType) : undefined,
+        workMode ? eq(jobPosts.workMode, workMode) : undefined,
+        city ? ilike(jobPosts.city, `%${city}%`) : undefined,
+        or(isNull(jobPosts.applicationDeadline), gte(jobPosts.applicationDeadline, now)),
+        q ? or(ilike(jobPosts.title, `%${q}%`), ilike(jobPosts.description, `%${q}%`), ilike(jobPosts.city, `%${q}%`)) : undefined
+      ))
+      .orderBy(desc(jobPosts.publishedAt))
+      .limit(100);
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+    res.json({ jobs: rows, total: rows.length });
+  } catch (err) {
+    console.error('Employment jobs search error:', err);
+    res.status(500).json({ error: 'Unable to load employment offers' });
+  }
+});
+
+app.get('/api/employment/jobs/:id', rateLimit(90, 60_000), async (req, res) => {
+  try {
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select({
+      id: jobPosts.id, referenceCode: jobPosts.referenceCode, title: jobPosts.title,
+      description: jobPosts.description, department: jobPosts.department,
+      contractType: jobPosts.contractType, workMode: jobPosts.workMode, city: jobPosts.city,
+      salaryMin: jobPosts.salaryMin, salaryMax: jobPosts.salaryMax,
+      salaryCurrency: jobPosts.salaryCurrency, salaryPeriod: jobPosts.salaryPeriod,
+      experienceLevel: jobPosts.experienceLevel, requiredSkills: jobPosts.requiredSkills,
+      applicationDeadline: jobPosts.applicationDeadline, publishedAt: jobPosts.publishedAt,
+      organizationName: organizations.name, countryIso2: countries.iso2, countryName: countries.nameFr,
+    }).from(jobPosts)
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .innerJoin(countries, eq(jobPosts.countryId, countries.id))
+      .innerJoin(countryModules, and(
+        eq(countryModules.countryId, countries.id),
+        eq(countryModules.moduleKey, 'employment'),
+        eq(countryModules.enabled, true)
+      ))
+      .where(and(
+        eq(jobPosts.id, jobId), eq(jobPosts.status, 'PUBLISHED'), eq(countries.status, 'ACTIVE')
+      )).limit(1);
+    if (!job) return res.status(404).json({ error: 'Published job offer not found' });
+    if (job.applicationDeadline && job.applicationDeadline.getTime() < Date.now()) {
+      return res.json({ job: { ...job, acceptingApplications: false } });
+    }
+    res.json({ job: { ...job, acceptingApplications: true } });
+  } catch (err) {
+    console.error('Employment job detail error:', err);
+    res.status(500).json({ error: 'Unable to load job details' });
+  }
+});
+
+app.post('/api/employment/jobs', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const body = req.body || {};
+    const organizationId = String(body.organizationId || '');
+    const title = String(body.title || '').trim();
+    const description = String(body.description || '').trim();
+    const city = String(body.city || '').trim();
+    const contractType = String(body.contractType || '').toUpperCase();
+    const allowedContracts = ['PERMANENT', 'FIXED_TERM', 'TEMPORARY', 'PART_TIME', 'INTERNSHIP', 'APPRENTICESHIP', 'SEASONAL', 'GRADUATE', 'PUBLIC_SERVICE'];
+    const workMode = String(body.workMode || 'ONSITE').toUpperCase();
+    if (!isValidUuid(organizationId) || title.length < 4 || title.length > 160 ||
+        description.length < 30 || description.length > 12000 || !city || city.length > 120 ||
+        !allowedContracts.includes(contractType) || !['ONSITE', 'HYBRID', 'REMOTE'].includes(workMode)) {
+      return res.status(400).json({ error: 'Invalid job details. Check title, description, location, contract and work mode.' });
+    }
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'You cannot publish offers for this organization' });
+    }
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    const [country] = await db.select().from(countries).where(eq(countries.id, org.countryId)).limit(1);
+    if (!country || country.status !== 'ACTIVE' || !(await isEmploymentEnabled(country.id))) {
+      return res.status(409).json({ error: 'Employment is not activated for this country' });
+    }
+    const salaryMin = body.salaryMin === '' || body.salaryMin == null ? null : Number(body.salaryMin);
+    const salaryMax = body.salaryMax === '' || body.salaryMax == null ? null : Number(body.salaryMax);
+    if ((salaryMin != null && (!Number.isFinite(salaryMin) || salaryMin < 0)) ||
+        (salaryMax != null && (!Number.isFinite(salaryMax) || salaryMax < 0)) ||
+        (salaryMin != null && salaryMax != null && salaryMax < salaryMin)) {
+      return res.status(400).json({ error: 'Invalid salary range' });
+    }
+    const [job] = await db.insert(jobPosts).values({
+      organizationId, countryId: country.id, createdByProfileId: ctx.profileId,
+      referenceCode: `JOB-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+      title, description, department: body.department ? String(body.department).slice(0, 120) : null,
+      contractType, workMode, city, salaryMin: salaryMin == null ? null : salaryMin.toFixed(2),
+      salaryMax: salaryMax == null ? null : salaryMax.toFixed(2),
+      salaryCurrency: country.defaultCurrency, salaryPeriod: ['HOUR','DAY','MONTH','YEAR'].includes(String(body.salaryPeriod).toUpperCase()) ? String(body.salaryPeriod).toUpperCase() : 'MONTH',
+      experienceLevel: body.experienceLevel ? String(body.experienceLevel).slice(0, 40) : null,
+      requiredSkills: Array.isArray(body.requiredSkills) ? body.requiredSkills.map((v: unknown) => String(v).trim().slice(0, 60)).filter(Boolean).slice(0, 30) : [],
+      applicationDeadline: body.applicationDeadline ? new Date(body.applicationDeadline) : null,
+      status: 'DRAFT',
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_JOB_CREATED',
+      entityType: 'job_post', entityId: job.id, details: { organizationId, status: 'DRAFT' }
+    });
+    res.status(201).json({ job });
+  } catch (err) {
+    console.error('Create employment job error:', err);
+    res.status(500).json({ error: 'Unable to create job offer' });
+  }
+});
+
+app.post('/api/employment/jobs/:id/publish', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job) return res.status(404).json({ error: 'Job offer not found' });
+    if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const [employerVerification] = await db.select({ status: employerVerifications.status })
+      .from(employerVerifications).where(eq(employerVerifications.organizationId, job.organizationId)).limit(1);
+    if (employerVerification?.status !== 'VERIFIED') {
+      return res.status(403).json({ error: 'Employer verification is required before publishing job offers' });
+    }
+    if (job.status !== 'DRAFT' && job.status !== 'PAUSED') {
+      return res.status(409).json({ error: 'Only draft or paused offers can be published' });
+    }
+    const [country] = await db.select().from(countries).where(eq(countries.id, job.countryId)).limit(1);
+    if (!country || country.status !== 'ACTIVE' || !(await isEmploymentEnabled(job.countryId))) {
+      return res.status(409).json({ error: 'Employment is not activated for this country' });
+    }
+    if (job.applicationDeadline && job.applicationDeadline.getTime() <= Date.now()) {
+      return res.status(400).json({ error: 'Application deadline must be in the future' });
+    }
+    const [published] = await db.update(jobPosts).set({
+      status: 'PUBLISHED', publishedAt: new Date(), updatedAt: new Date()
+    }).where(eq(jobPosts.id, job.id)).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_JOB_PUBLISHED',
+      entityType: 'job_post', entityId: job.id, details: { status: 'PUBLISHED' }
+    });
+    res.json({ job: published });
+  } catch (err) {
+    console.error('Publish employment job error:', err);
+    res.status(500).json({ error: 'Unable to publish job offer' });
+  }
+});
+
+app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job || job.status !== 'PUBLISHED') return res.status(404).json({ error: 'Published job offer not found' });
+    if (!(await isEmploymentEnabled(job.countryId))) return res.status(409).json({ error: 'Employment is not currently enabled for this country' });
+    const [jobCountry] = await db.select().from(countries).where(eq(countries.id, job.countryId)).limit(1);
+    if (!jobCountry || jobCountry.status !== 'ACTIVE') return res.status(409).json({ error: 'Employment is not currently open in this country' });
+    if (job.applicationDeadline && job.applicationDeadline.getTime() < Date.now()) {
+      return res.status(409).json({ error: 'The application deadline has passed' });
+    }
+    const coverLetter = req.body?.coverLetter == null ? null : String(req.body.coverLetter).trim().slice(0, 5000);
+    const result = await db.transaction(async (tx) => {
+      const [candidate] = await tx.insert(candidateProfiles).values({
+        profileId: ctx.profileId, countryIso2: ctx.countryIso2, visibility: 'PRIVATE'
+      }).onConflictDoNothing().returning();
+      let candidateId = candidate?.id;
+      if (!candidateId) {
+        const [existing] = await tx.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+        candidateId = existing?.id;
+      }
+      if (!candidateId) throw new Error('Candidate profile could not be initialized');
+      const [application] = await tx.insert(jobApplications).values({
+        jobPostId: job.id, candidateProfileId: candidateId, coverLetter, status: 'SUBMITTED'
+      }).returning();
+      await tx.insert(jobApplicationEvents).values({
+        applicationId: application.id, actorProfileId: ctx.profileId,
+        fromStatus: null, toStatus: 'SUBMITTED', note: 'Application submitted'
+      });
+      return application;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: jobCountry.iso2, action: 'EMPLOYMENT_APPLICATION_SUBMITTED',
+      entityType: 'job_application', entityId: result.id, details: { jobPostId: job.id }
+    });
+    await notifyEmploymentOrganization(job.organizationId, {
+      type: 'EMPLOYMENT_APPLICATION_SUBMITTED', eventKey: `employment:application-submitted:${result.id}`,
+      titleFr: 'Nouvelle candidature', titleEn: 'New job application', titleAr: 'طلب توظيف جديد', titlePt: 'Nova candidatura',
+      bodyFr: `Une nouvelle candidature a été reçue pour « ${job.title} ».`,
+      bodyEn: `A new application was received for “${job.title}”.`,
+      bodyAr: `تم استلام طلب جديد للوظيفة « ${job.title} ».`,
+      bodyPt: `Foi recebida uma nova candidatura para « ${job.title} ».`,
+    });
+    res.status(201).json({ application: result });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'You have already applied for this job' });
+    console.error('Submit employment application error:', err);
+    res.status(500).json({ error: 'Unable to submit application' });
+  }
+});
+
+
+
+// Candidate documents are uploaded server-side into a private quarantine prefix.
+const EMPLOYMENT_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024;
+const EMPLOYMENT_DOCUMENT_ALLOWED_TYPES = new Set(['CV', 'CERTIFICATE', 'DIPLOMA', 'OTHER']);
+
+app.post('/api/employment/candidates/me/documents', requireAuth, rateLimit(8, 60_000), express.raw({ type: 'application/pdf', limit: EMPLOYMENT_DOCUMENT_MAX_BYTES }), async (req: AuthRequest, res) => {
+  let storagePath: string | null = null;
+  try {
+    const ctx = req.authCtx!;
+    const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!buffer || buffer.length < 8 || buffer.length > EMPLOYMENT_DOCUMENT_MAX_BYTES) {
+      return res.status(400).json({ error: 'A PDF file between 8 bytes and 8 MB is required' });
+    }
+    if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/pdf' ||
+        buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
+      return res.status(415).json({ error: 'Only genuine PDF files are accepted' });
+    }
+    const documentType = String(req.query.documentType || 'CV').toUpperCase();
+    if (!EMPLOYMENT_DOCUMENT_ALLOWED_TYPES.has(documentType)) return res.status(400).json({ error: 'Invalid document type' });
+    const rawName = String(req.query.fileName || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf';
+    const originalFileName = rawName.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 180) || 'document.pdf';
+    if (!originalFileName.toLowerCase().endsWith('.pdf')) return res.status(400).json({ error: 'The file name must end with .pdf' });
+
+    let [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) {
+      await db.insert(candidateProfiles).values({
+        profileId: ctx.profileId, countryIso2: ctx.countryIso2, visibility: 'PRIVATE',
+      }).onConflictDoNothing();
+      [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    }
+    if (!candidate) return res.status(500).json({ error: 'Candidate profile could not be initialized' });
+
+    const id = crypto.randomUUID();
+    storagePath = `employment/candidates/${ctx.profileId}/quarantine/${id}.pdf`;
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    const bucket = getPrivateEmploymentBucket();
+    const file = bucket.file(storagePath);
+    await file.save(buffer, {
+      resumable: false,
+      validation: 'crc32c',
+      metadata: {
+        contentType: 'application/pdf',
+        cacheControl: 'private, no-store, max-age=0',
+        metadata: { candidateProfileId: candidate.id, documentId: id, scanStatus: 'QUARANTINED', sha256 },
+      },
+    });
+
+    const [document] = await db.insert(candidateDocuments).values({
+      id, candidateProfileId: candidate.id, documentType, originalFileName, storagePath,
+      mimeType: 'application/pdf', sizeBytes: buffer.length, sha256, scanStatus: 'QUARANTINED',
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_UPLOADED',
+      entityType: 'candidate_document', entityId: document.id,
+      details: { documentType, sizeBytes: buffer.length, sha256, scanStatus: 'QUARANTINED' },
+    });
+    return res.status(201).json({ document: {
+      id: document.id, documentType: document.documentType, originalFileName: document.originalFileName,
+      sizeBytes: document.sizeBytes, scanStatus: document.scanStatus, uploadedAt: document.uploadedAt,
+    }, message: 'Document stocké en quarantaine. Il ne sera pas transmis aux recruteurs avant analyse antivirus et consentement explicite.' });
+  } catch (err) {
+    if (storagePath) {
+      try { await getPrivateEmploymentBucket().file(storagePath).delete({ ignoreNotFound: true }); } catch { /* best-effort cleanup */ }
+    }
+    console.error('Candidate document upload error:', err);
+    return res.status(503).json({ error: 'Secure document storage is unavailable; the document was not accepted' });
+  }
+});
+
+app.get('/api/employment/candidates/me/documents', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ documents: [] });
+    const documents = await db.select({
+      id: candidateDocuments.id, documentType: candidateDocuments.documentType,
+      originalFileName: candidateDocuments.originalFileName, sizeBytes: candidateDocuments.sizeBytes,
+      scanStatus: candidateDocuments.scanStatus, uploadedAt: candidateDocuments.uploadedAt,
+    }).from(candidateDocuments)
+      .where(eq(candidateDocuments.candidateProfileId, candidate.id))
+      .orderBy(desc(candidateDocuments.uploadedAt)).limit(50);
+    return res.json({ documents });
+  } catch (err) {
+    console.error('Candidate documents list error:', err);
+    return res.status(500).json({ error: 'Unable to load candidate documents' });
+  }
+});
+
+app.delete('/api/employment/candidates/me/documents/:id', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const id = String(req.params.id);
+    if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid document ID' });
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Document not found' });
+    const [document] = await db.select().from(candidateDocuments).where(and(
+      eq(candidateDocuments.id, id), eq(candidateDocuments.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!document || document.scanStatus === 'DELETED') return res.status(404).json({ error: 'Document not found' });
+    await getPrivateEmploymentBucket().file(document.storagePath).delete({ ignoreNotFound: true });
+    await db.update(candidateDocuments).set({ scanStatus: 'DELETED', updatedAt: new Date() }).where(eq(candidateDocuments.id, id));
+    await db.delete(candidateDocumentShares).where(eq(candidateDocumentShares.documentId, id));
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_DELETED',
+      entityType: 'candidate_document', entityId: id, details: { previousScanStatus: document.scanStatus },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Candidate document delete error:', err);
+    return res.status(503).json({ error: 'Unable to securely delete this document right now' });
+  }
+});
+
+app.post('/api/employment/candidates/me/documents/:id/share', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const documentId = String(req.params.id);
+    const applicationId = String(req.body?.applicationId || '');
+    if (!isValidUuid(documentId) || !isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid document or application ID' });
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Candidate profile not found' });
+    const [document] = await db.select().from(candidateDocuments).where(and(
+      eq(candidateDocuments.id, documentId), eq(candidateDocuments.candidateProfileId, candidate.id),
+      sql`${candidateDocuments.scanStatus} <> 'DELETED'`
+    )).limit(1);
+    if (!document) return res.status(404).json({ error: 'Document not found' });
+    const [application] = await db.select().from(jobApplications).where(and(
+      eq(jobApplications.id, applicationId), eq(jobApplications.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!application) return res.status(404).json({ error: 'Your application was not found' });
+    await db.insert(candidateDocumentShares).values({ documentId, applicationId, consentedAt: new Date(), revokedAt: null })
+      .onConflictDoUpdate({
+        target: [candidateDocumentShares.documentId, candidateDocumentShares.applicationId],
+        set: { consentedAt: new Date(), revokedAt: null },
+      });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_SHARE_CONSENTED',
+      entityType: 'candidate_document', entityId: documentId,
+      details: { applicationId, scanStatus: document.scanStatus },
+    });
+    return res.json({ success: true, scanStatus: document.scanStatus, message: document.scanStatus === 'CLEAN'
+      ? 'Consentement enregistré : le recruteur autorisé pourra accéder au document.'
+      : 'Consentement enregistré. Le document reste inaccessible au recruteur jusqu’à validation antivirus.' });
+  } catch (err) {
+    console.error('Candidate document share consent error:', err);
+    return res.status(500).json({ error: 'Unable to save document sharing consent' });
+  }
+});
+
+app.delete('/api/employment/candidates/me/documents/:id/share/:applicationId', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const documentId = String(req.params.id), applicationId = String(req.params.applicationId);
+    if (!isValidUuid(documentId) || !isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid document or application ID' });
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Candidate profile not found' });
+    const [document] = await db.select({ id: candidateDocuments.id }).from(candidateDocuments).where(and(
+      eq(candidateDocuments.id, documentId), eq(candidateDocuments.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!document) return res.status(404).json({ error: 'Document not found' });
+    await db.update(candidateDocumentShares).set({ revokedAt: new Date() }).where(and(
+      eq(candidateDocumentShares.documentId, documentId), eq(candidateDocumentShares.applicationId, applicationId)
+    ));
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_SHARE_REVOKED',
+      entityType: 'candidate_document', entityId: documentId, details: { applicationId },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Candidate document share revoke error:', err);
+    return res.status(500).json({ error: 'Unable to revoke document sharing' });
+  }
+});
+
+app.get('/api/employment/applications/:id/documents', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [row] = await db.select({
+      applicationId: jobApplications.id, organizationId: jobPosts.organizationId,
+    }).from(jobApplications).innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!row || !(await canManageEmploymentOrg(row.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+    const shared = await db.select({
+      id: candidateDocuments.id, documentType: candidateDocuments.documentType,
+      originalFileName: candidateDocuments.originalFileName, sizeBytes: candidateDocuments.sizeBytes,
+      scanStatus: candidateDocuments.scanStatus, consentedAt: candidateDocumentShares.consentedAt,
+      storagePath: candidateDocuments.storagePath,
+    }).from(candidateDocumentShares)
+      .innerJoin(candidateDocuments, eq(candidateDocumentShares.documentId, candidateDocuments.id))
+      .where(and(
+        eq(candidateDocumentShares.applicationId, applicationId),
+        sql`${candidateDocumentShares.revokedAt} IS NULL`,
+        sql`${candidateDocuments.scanStatus} <> 'DELETED'`
+      )).limit(30);
+    const documents = await Promise.all(shared.map(async (doc) => {
+      let downloadUrl: string | null = null;
+      if (doc.scanStatus === 'CLEAN') {
+        const [signed] = await getPrivateEmploymentBucket().file(doc.storagePath).getSignedUrl({
+          action: 'read', expires: Date.now() + 5 * 60 * 1000,
+          responseDisposition: `attachment; filename="${doc.originalFileName.replace(/["\\\\]/g, '')}"`,
+        });
+        downloadUrl = signed;
+      }
+      return { id: doc.id, documentType: doc.documentType, originalFileName: doc.originalFileName,
+        sizeBytes: doc.sizeBytes, scanStatus: doc.scanStatus, consentedAt: doc.consentedAt, downloadUrl };
+    }));
+    return res.json({ documents });
+  } catch (err) {
+    console.error('Employer shared documents read error:', err);
+    return res.status(500).json({ error: 'Unable to load shared documents' });
+  }
+});
+
+app.get('/api/employment/candidates/me', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select().from(candidateProfiles)
+      .where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    const [profile] = await db.select({
+      fullName: profiles.fullName, email: profiles.email,
+      phone: profiles.phone, avatarUrl: profiles.avatarUrl,
+      countryIso2: profiles.countryIso2, cityName: profiles.cityName,
+    }).from(profiles).where(eq(profiles.id, ctx.profileId)).limit(1);
+    res.json({ candidate: candidate || null, profile: profile || null });
+  } catch (err) {
+    console.error('Candidate profile read error:', err);
+    res.status(500).json({ error: 'Unable to load candidate profile' });
+  }
+});
+
+app.patch('/api/employment/candidates/me', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const body = req.body || {};
+    const headline = String(body.headline || '').trim();
+    const summary = String(body.summary || '').trim();
+    const city = String(body.city || '').trim();
+    const skills: string[] = Array.isArray(body.skills)
+      ? Array.from(new Set<string>(
+          (body.skills as unknown[])
+            .map((value: unknown): string => String(value).trim().slice(0, 60))
+            .filter((value: string) => value.length > 0)
+        )).slice(0, 40)
+      : [];
+    const experienceYears = Number(body.experienceYears ?? 0);
+    const visibility = String(body.visibility || 'PRIVATE').toUpperCase();
+    if (headline.length > 160 || summary.length > 4000 || city.length > 120 ||
+        !Number.isInteger(experienceYears) || experienceYears < 0 || experienceYears > 60 ||
+        !['PRIVATE', 'EMPLOYERS_WITH_APPLICATION', 'PUBLIC'].includes(visibility)) {
+      return res.status(400).json({ error: 'Invalid candidate profile fields' });
+    }
+    const [profile] = await db.select().from(profiles).where(eq(profiles.id, ctx.profileId)).limit(1);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    const [saved] = await db.insert(candidateProfiles).values({
+      profileId: ctx.profileId, countryIso2: profile.countryIso2,
+      headline: headline || null, summary: summary || null, city: city || null,
+      skills, experienceYears, visibility, updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: candidateProfiles.profileId,
+      set: { headline: headline || null, summary: summary || null, city: city || null,
+        skills, experienceYears, visibility, updatedAt: new Date() },
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: profile.countryIso2, action: 'EMPLOYMENT_CANDIDATE_PROFILE_UPDATED',
+      entityType: 'candidate_profile', entityId: saved.id,
+      details: { visibility, skillsCount: skills.length, experienceYears },
+    });
+    res.json({ candidate: saved });
+  } catch (err) {
+    console.error('Candidate profile update error:', err);
+    res.status(500).json({ error: 'Unable to save candidate profile' });
+  }
+});
+
+app.get('/api/employment/employer/jobs', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const organizationId = String(req.query.organizationId || '');
+    if (!isValidUuid(organizationId)) return res.status(400).json({ error: 'Valid organizationId is required' });
+    if (!(await canManageEmploymentOrg(organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const jobs = await db.select({
+      id: jobPosts.id, referenceCode: jobPosts.referenceCode, title: jobPosts.title,
+      city: jobPosts.city, status: jobPosts.status, publishedAt: jobPosts.publishedAt,
+      createdAt: jobPosts.createdAt,
+    }).from(jobPosts).where(eq(jobPosts.organizationId, organizationId))
+      .orderBy(desc(jobPosts.createdAt));
+    const ids = jobs.map((j) => j.id);
+    const counts = ids.length ? await db.select({
+      jobPostId: jobApplications.jobPostId,
+      status: jobApplications.status,
+      count: sql<number>`count(*)::int`,
+    }).from(jobApplications).where(inArray(jobApplications.jobPostId, ids))
+      .groupBy(jobApplications.jobPostId, jobApplications.status) : [];
+    const byJob = new Map<string, Record<string, number>>();
+    for (const row of counts) {
+      const item = byJob.get(row.jobPostId) || {};
+      item[row.status] = Number(row.count);
+      byJob.set(row.jobPostId, item);
+    }
+    res.json({ jobs: jobs.map((job) => ({ ...job, applicationCounts: byJob.get(job.id) || {} })) });
+  } catch (err) {
+    console.error('Employer job list error:', err);
+    res.status(500).json({ error: 'Unable to load employer jobs' });
+  }
+});
+
+app.get('/api/employment/me/applications', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select().from(candidateProfiles)
+      .where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ applications: [] });
+    const rows = await db.select({
+      id: jobApplications.id, status: jobApplications.status,
+      submittedAt: jobApplications.submittedAt, updatedAt: jobApplications.updatedAt,
+      coverLetter: jobApplications.coverLetter,
+      jobId: jobPosts.id, jobTitle: jobPosts.title, jobCity: jobPosts.city,
+      contractType: jobPosts.contractType, workMode: jobPosts.workMode,
+      organizationName: organizations.name, countryIso2: countries.iso2,
+    }).from(jobApplications)
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .innerJoin(countries, eq(jobPosts.countryId, countries.id))
+      .where(eq(jobApplications.candidateProfileId, candidate.id))
+      .orderBy(desc(jobApplications.submittedAt));
+    res.json({ applications: rows });
+  } catch (err) {
+    console.error('Candidate applications error:', err);
+    res.status(500).json({ error: 'Unable to load your applications' });
+  }
+});
+
+app.get('/api/employment/applications/:id/events', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [application] = await db.select({
+      id: jobApplications.id,
+      candidateProfileId: jobApplications.candidateProfileId,
+      organizationId: jobPosts.organizationId,
+    }).from(jobApplications)
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    const isCandidate = candidate?.id === application.candidateProfileId;
+    const isEmployer = await canManageEmploymentOrg(application.organizationId, ctx.profileId, ctx.roles);
+    if (!isCandidate && !isEmployer) return res.status(404).json({ error: 'Application not found' });
+
+    const events = await db.select({
+      id: jobApplicationEvents.id,
+      fromStatus: jobApplicationEvents.fromStatus,
+      toStatus: jobApplicationEvents.toStatus,
+      note: isEmployer ? jobApplicationEvents.note : sql<string>`NULL`,
+      createdAt: jobApplicationEvents.createdAt,
+    }).from(jobApplicationEvents)
+      .where(eq(jobApplicationEvents.applicationId, applicationId))
+      .orderBy(desc(jobApplicationEvents.createdAt))
+      .limit(100);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ events });
+  } catch (err) {
+    console.error('Employment application history error:', err);
+    res.status(500).json({ error: 'Unable to load application history' });
+  }
+});
+
+app.get('/api/employment/jobs/:id/applications', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job) return res.status(404).json({ error: 'Job offer not found' });
+    if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const rows = await db.select({
+      id: jobApplications.id, status: jobApplications.status,
+      submittedAt: jobApplications.submittedAt, updatedAt: jobApplications.updatedAt,
+      coverLetter: jobApplications.coverLetter,
+      candidateProfileId: candidateProfiles.id,
+      headline: candidateProfiles.headline, summary: candidateProfiles.summary,
+      city: candidateProfiles.city, countryIso2: candidateProfiles.countryIso2,
+      skills: candidateProfiles.skills, experienceYears: candidateProfiles.experienceYears,
+      candidateName: profiles.fullName,
+    }).from(jobApplications)
+      .innerJoin(candidateProfiles, eq(jobApplications.candidateProfileId, candidateProfiles.id))
+      .innerJoin(profiles, eq(candidateProfiles.profileId, profiles.id))
+      .where(eq(jobApplications.jobPostId, job.id))
+      .orderBy(desc(jobApplications.submittedAt));
+    res.json({ applications: rows.map((row) => ({ ...row, contractType: job.contractType })) });
+  } catch (err) {
+    console.error('Employer applications error:', err);
+    res.status(500).json({ error: 'Unable to load applications' });
+  }
+});
+
+app.post('/api/employment/applications/:id/withdraw', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Application not found' });
+    const [application] = await db.select().from(jobApplications).where(and(
+      eq(jobApplications.id, applicationId),
+      eq(jobApplications.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    if (!['SUBMITTED', 'REVIEWING', 'SHORTLISTED', 'INTERVIEW'].includes(application.status)) {
+      return res.status(409).json({ error: 'This application can no longer be withdrawn' });
+    }
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx.update(jobApplications)
+        .set({ status: 'WITHDRAWN', updatedAt: new Date() })
+        .where(and(
+          eq(jobApplications.id, application.id),
+          eq(jobApplications.candidateProfileId, candidate.id),
+          eq(jobApplications.status, application.status)
+        )).returning();
+      if (!row) throw new Error('Application status changed concurrently; reload and retry');
+      await tx.insert(jobApplicationEvents).values({
+        applicationId: application.id, actorProfileId: ctx.profileId,
+        fromStatus: application.status, toStatus: 'WITHDRAWN',
+        note: 'Candidate withdrew the application',
+      });
+      return row;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_APPLICATION_WITHDRAWN', entityType: 'job_application',
+      entityId: application.id, details: { jobPostId: application.jobPostId },
+    });
+    const [withdrawnJob] = await db.select({ organizationId: jobPosts.organizationId, title: jobPosts.title })
+      .from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (withdrawnJob) await notifyEmploymentOrganization(withdrawnJob.organizationId, {
+      type: 'EMPLOYMENT_APPLICATION_WITHDRAWN', eventKey: `employment:application-withdrawn:${application.id}`,
+      titleFr: 'Candidature retirée', titleEn: 'Application withdrawn', titleAr: 'تم سحب طلب التوظيف', titlePt: 'Candidatura retirada',
+      bodyFr: `Un candidat a retiré sa candidature pour « ${withdrawnJob.title} ».`,
+      bodyEn: `A candidate withdrew their application for “${withdrawnJob.title}”.`,
+      bodyAr: `قام أحد المرشحين بسحب طلبه للوظيفة « ${withdrawnJob.title} ».`,
+      bodyPt: `Um candidato retirou a candidatura para « ${withdrawnJob.title} ».`,
+    });
+    res.json({ application: updated });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
+    console.error('Withdraw employment application error:', err);
+    res.status(500).json({ error: 'Unable to withdraw application' });
+  }
+});
+
+app.post('/api/employment/applications/:id/interviews', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [application] = await db.select().from(jobApplications).where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (!['SUBMITTED', 'REVIEWING', 'SHORTLISTED', 'INTERVIEW'].includes(application.status)) {
+      return res.status(409).json({ error: 'An interview cannot be scheduled at this application stage' });
+    }
+    const startsAt = new Date(req.body?.startsAt);
+    const endsAt = new Date(req.body?.endsAt);
+    const timezone = String(req.body?.timezone || '').trim();
+    const mode = String(req.body?.mode || '').toUpperCase();
+    const locationOrUrl = req.body?.locationOrUrl == null ? null : String(req.body.locationOrUrl).trim().slice(0, 500);
+    const internalNotes = req.body?.internalNotes == null ? null : String(req.body.internalNotes).trim().slice(0, 2000);
+    if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) ||
+        endsAt.getTime() <= startsAt.getTime() || startsAt.getTime() < Date.now() - 60_000 ||
+        !timezone || timezone.length > 80 || !['VIDEO', 'PHONE', 'ONSITE'].includes(mode) ||
+        (mode !== 'PHONE' && !locationOrUrl)) {
+      return res.status(400).json({ error: 'Invalid interview schedule' });
+    }
+    try { new Intl.DateTimeFormat('en', { timeZone: timezone }); }
+    catch { return res.status(400).json({ error: 'Invalid IANA timezone' }); }
+    const interview = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(jobInterviews).values({
+        applicationId, scheduledByProfileId: ctx.profileId, startsAt, endsAt,
+        timezone, mode, locationOrUrl, internalNotes, status: 'SCHEDULED',
+      }).returning();
+      if (application.status !== 'INTERVIEW') {
+        const [updated] = await tx.update(jobApplications)
+          .set({ status: 'INTERVIEW', updatedAt: new Date() })
+          .where(and(eq(jobApplications.id, application.id), eq(jobApplications.status, application.status)))
+          .returning();
+        if (!updated) throw new Error('Application status changed concurrently; reload and retry');
+        await tx.insert(jobApplicationEvents).values({
+          applicationId: application.id, actorProfileId: ctx.profileId,
+          fromStatus: application.status, toStatus: 'INTERVIEW', note: 'Interview scheduled',
+        });
+      }
+      return created;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_INTERVIEW_SCHEDULED', entityType: 'job_interview',
+      entityId: interview.id, details: { applicationId, mode, startsAt: startsAt.toISOString() },
+    });
+    await notifyEmploymentCandidate(application.candidateProfileId, {
+      type: 'EMPLOYMENT_INTERVIEW_SCHEDULED', eventKey: `employment:interview-scheduled:${interview.id}`,
+      titleFr: 'Invitation à un entretien', titleEn: 'Interview invitation', titleAr: 'دعوة لإجراء مقابلة', titlePt: 'Convite para entrevista',
+      bodyFr: `Un entretien est planifié pour « ${job.title} » le ${startsAt.toLocaleString('fr-FR', { timeZone: timezone })}.`,
+      bodyEn: `An interview for “${job.title}” is scheduled on ${startsAt.toLocaleString('en-GB', { timeZone: timezone })}.`,
+      bodyAr: `تم تحديد موعد مقابلة للوظيفة « ${job.title} » في ${startsAt.toLocaleString('en-GB', { timeZone: timezone })}.`,
+      bodyPt: `Uma entrevista para « ${job.title} » foi marcada para ${startsAt.toLocaleString('pt-PT', { timeZone: timezone })}.`,
+    });
+    res.status(201).json({ interview });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
+    console.error('Schedule employment interview error:', err);
+    res.status(500).json({ error: 'Unable to schedule interview' });
+  }
+});
+
+app.get('/api/employment/me/interviews', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ interviews: [] });
+    const interviews = await db.select({
+      id: jobInterviews.id, startsAt: jobInterviews.startsAt, endsAt: jobInterviews.endsAt,
+      timezone: jobInterviews.timezone, mode: jobInterviews.mode,
+      locationOrUrl: jobInterviews.locationOrUrl, candidateResponse: jobInterviews.candidateResponse,
+      status: jobInterviews.status, candidateMessage: jobInterviews.candidateMessage,
+      jobTitle: jobPosts.title, organizationName: organizations.name, applicationId: jobApplications.id,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .innerJoin(organizations, eq(jobPosts.organizationId, organizations.id))
+      .where(eq(jobApplications.candidateProfileId, candidate.id))
+      .orderBy(desc(jobInterviews.startsAt));
+    res.json({ interviews });
+  } catch (err) {
+    console.error('Candidate interviews error:', err);
+    res.status(500).json({ error: 'Unable to load interviews' });
+  }
+});
+
+app.patch('/api/employment/interviews/:id/response', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const interviewId = String(req.params.id);
+    const response = String(req.body?.response || '').toUpperCase();
+    const message = req.body?.message == null ? null : String(req.body.message).trim().slice(0, 1000);
+    if (!isValidUuid(interviewId) || !['CONFIRMED', 'DECLINED'].includes(response)) {
+      return res.status(400).json({ error: 'Invalid interview response' });
+    }
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Interview not found' });
+    const [interview] = await db.select({
+      interview: jobInterviews, applicationId: jobApplications.id,
+      candidateProfileId: jobApplications.candidateProfileId,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .where(eq(jobInterviews.id, interviewId)).limit(1);
+    if (!interview || interview.candidateProfileId !== candidate.id) return res.status(404).json({ error: 'Interview not found' });
+    if (interview.interview.status !== 'SCHEDULED' || interview.interview.startsAt.getTime() < Date.now()) {
+      return res.status(409).json({ error: 'This interview can no longer be answered' });
+    }
+    const [updated] = await db.update(jobInterviews).set({
+      candidateResponse: response, candidateMessage: message, updatedAt: new Date(),
+    }).where(and(
+      eq(jobInterviews.id, interviewId), eq(jobInterviews.status, 'SCHEDULED')
+    )).returning();
+    if (!updated) return res.status(409).json({ error: 'Interview was updated concurrently' });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_INTERVIEW_RESPONSE', entityType: 'job_interview',
+      entityId: interviewId, details: { response },
+    });
+    const [interviewContext] = await db.select({
+      organizationId: jobPosts.organizationId, jobTitle: jobPosts.title,
+    }).from(jobApplications)
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobApplications.id, interview.applicationId)).limit(1);
+    if (interviewContext) await notifyEmploymentOrganization(interviewContext.organizationId, {
+      type: 'EMPLOYMENT_INTERVIEW_RESPONSE', eventKey: `employment:interview-response:${interviewId}:${response}`,
+      titleFr: 'Réponse à une invitation', titleEn: 'Interview invitation response', titleAr: 'الرد على دعوة المقابلة', titlePt: 'Resposta ao convite de entrevista',
+      bodyFr: `Le candidat a ${response === 'CONFIRMED' ? 'confirmé' : 'refusé'} l’entretien pour « ${interviewContext.jobTitle} ».`,
+      bodyEn: `The candidate has ${response === 'CONFIRMED' ? 'confirmed' : 'declined'} the interview for “${interviewContext.jobTitle}”.`,
+      bodyAr: `قام المرشح ${response === 'CONFIRMED' ? 'بتأكيد' : 'برفض'} المقابلة للوظيفة « ${interviewContext.jobTitle} ».`,
+      bodyPt: `O candidato ${response === 'CONFIRMED' ? 'confirmou' : 'recusou'} a entrevista para « ${interviewContext.jobTitle} ».`,
+    });
+    res.json({ interview: updated });
+  } catch (err) {
+    console.error('Interview response error:', err);
+    res.status(500).json({ error: 'Unable to save interview response' });
+  }
+});
+
+app.get('/api/employment/jobs/:id/interviews', requireAuth, rateLimit(60, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const jobId = String(req.params.id);
+    if (!isValidUuid(jobId)) return res.status(400).json({ error: 'Invalid job ID' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, jobId)).limit(1);
+    if (!job) return res.status(404).json({ error: 'Job offer not found' });
+    if (!(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const interviews = await db.select({
+      interview: jobInterviews,
+      applicationId: jobApplications.id,
+      candidateName: profiles.fullName,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .leftJoin(candidateProfiles, eq(jobApplications.candidateProfileId, candidateProfiles.id))
+      .leftJoin(profiles, eq(candidateProfiles.profileId, profiles.id))
+      .where(eq(jobApplications.jobPostId, jobId))
+      .orderBy(desc(jobInterviews.startsAt));
+    const interviewIds = interviews.map(row => row.interview.id);
+    const evaluations = interviewIds.length
+      ? await db.select().from(jobInterviewEvaluations)
+          .where(inArray(jobInterviewEvaluations.interviewId, interviewIds))
+          .orderBy(desc(jobInterviewEvaluations.updatedAt))
+      : [];
+    res.json({
+      interviews: interviews.map(row => ({
+        ...row.interview,
+        applicationId: row.applicationId,
+        candidateName: row.candidateName || 'Candidat',
+        evaluations: evaluations.filter(evaluation => evaluation.interviewId === row.interview.id),
+        myEvaluation: evaluations.find(evaluation =>
+          evaluation.interviewId === row.interview.id && evaluation.reviewerProfileId === ctx.profileId
+        ) || null,
+      })),
+    });
+  } catch (err) {
+    console.error('Employer interviews error:', err);
+    res.status(500).json({ error: 'Unable to load employer interviews' });
+  }
+});
+
+app.post('/api/employment/interviews/:id/evaluation', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const interviewId = String(req.params.id);
+    const score = Number(req.body?.score);
+    const recommendation = String(req.body?.recommendation || '').toUpperCase();
+    const strengths = String(req.body?.strengths || '').trim().slice(0, 3000);
+    const concerns = String(req.body?.concerns || '').trim().slice(0, 3000);
+    if (!isValidUuid(interviewId) || !Number.isInteger(score) || score < 1 || score > 5 ||
+        !['STRONG_YES', 'YES', 'HOLD', 'NO'].includes(recommendation)) {
+      return res.status(400).json({ error: 'Invalid interview evaluation' });
+    }
+    const [interview] = await db.select({
+      interview: jobInterviews, organizationId: jobPosts.organizationId,
+    }).from(jobInterviews)
+      .innerJoin(jobApplications, eq(jobInterviews.applicationId, jobApplications.id))
+      .innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobInterviews.id, interviewId)).limit(1);
+    if (!interview) return res.status(404).json({ error: 'Interview not found' });
+    if (!(await canManageEmploymentOrg(interview.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const [evaluation] = await db.insert(jobInterviewEvaluations).values({
+      interviewId, reviewerProfileId: ctx.profileId, score, recommendation, strengths, concerns,
+      updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: [jobInterviewEvaluations.interviewId, jobInterviewEvaluations.reviewerProfileId],
+      set: { score, recommendation, strengths, concerns, updatedAt: new Date() },
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_INTERVIEW_EVALUATED', entityType: 'job_interview',
+      entityId: interviewId, details: { score, recommendation },
+    });
+    res.json({ evaluation });
+  } catch (err) {
+    console.error('Interview evaluation error:', err);
+    res.status(500).json({ error: 'Unable to save interview evaluation' });
+  }
+});
+
+app.patch('/api/employment/applications/:id/status', requireAuth, rateLimit(40, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    const nextStatus = String(req.body?.status || '').toUpperCase();
+    const allowed = ['REVIEWING', 'SHORTLISTED', 'INTERVIEW', 'OFFER', 'REJECTED'];
+    if (!isValidUuid(applicationId) || !allowed.includes(nextStatus)) {
+      return res.status(400).json({ error: 'Invalid application ID or status' });
+    }
+    const [application] = await db.select().from(jobApplications)
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const [job] = await db.select().from(jobPosts)
+      .where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const transitions: Record<string, string[]> = {
+      SUBMITTED: ['REVIEWING', 'REJECTED'],
+      REVIEWING: ['SHORTLISTED', 'INTERVIEW', 'REJECTED'],
+      SHORTLISTED: ['INTERVIEW', 'OFFER', 'REJECTED'],
+      INTERVIEW: ['OFFER', 'REJECTED'],
+      OFFER: ['REJECTED'],
+      HIRED: [], REJECTED: [], WITHDRAWN: [],
+    };
+    if (!(transitions[application.status] || []).includes(nextStatus)) {
+      return res.status(409).json({ error: `Transition ${application.status} → ${nextStatus} is not allowed` });
+    }
+    const note = req.body?.note == null ? null : String(req.body.note).trim().slice(0, 1000);
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx.update(jobApplications)
+        .set({ status: nextStatus, updatedAt: new Date() })
+        .where(and(eq(jobApplications.id, application.id), eq(jobApplications.status, application.status)))
+        .returning();
+      if (!row) throw new Error('Application status changed concurrently; reload and retry');
+      await tx.insert(jobApplicationEvents).values({
+        applicationId: application.id, actorProfileId: ctx.profileId,
+        fromStatus: application.status, toStatus: nextStatus, note,
+      });
+      return row;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_APPLICATION_STATUS_CHANGED', entityType: 'job_application',
+      entityId: application.id, details: { jobPostId: job.id, from: application.status, to: nextStatus },
+    });
+    await notifyEmploymentCandidate(application.candidateProfileId, {
+      type: 'EMPLOYMENT_APPLICATION_STATUS_CHANGED', eventKey: `employment:application-status:${application.id}:${nextStatus}`,
+      titleFr: 'Mise à jour de candidature', titleEn: 'Application status updated', titleAr: 'تحديث حالة طلب التوظيف', titlePt: 'Estado da candidatura atualizado',
+      bodyFr: `Votre candidature pour « ${job.title} » est passée à l’étape « ${nextStatus} ».`,
+      bodyEn: `Your application for “${job.title}” moved to “${nextStatus}”.`,
+      bodyAr: `تم تحديث طلبك للوظيفة « ${job.title} » إلى « ${nextStatus} ».`,
+      bodyPt: `A sua candidatura para « ${job.title} » passou para « ${nextStatus} ».`,
+    });
+    res.json({ application: updated });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently')) return res.status(409).json({ error: err.message });
+    console.error('Update application status error:', err);
+    res.status(500).json({ error: 'Unable to update application status' });
+  }
+});
+
+const canManageEmploymentCountry = async (countryId: string, profileId: string, roles: string[]) => {
+  if (roles.includes('SUPER_ADMIN')) return true;
+  if (!roles.includes('LOCAL_ADMIN')) return false;
+  const [assignment] = await db.select({ id: countryAdmins.id }).from(countryAdmins)
+    .where(and(eq(countryAdmins.countryId, countryId), eq(countryAdmins.profileId, profileId))).limit(1);
+  return Boolean(assignment);
+};
+
+app.post('/api/employment/contract-templates', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const countryId = String(req.body?.countryId || '');
+    const language = String(req.body?.language || '').toLowerCase();
+    const contractType = String(req.body?.contractType || '').toUpperCase();
+    const title = String(req.body?.title || '').trim().slice(0, 180);
+    const body = String(req.body?.body || '').trim().slice(0, 30000);
+    const version = Number(req.body?.version);
+    if (!isValidUuid(countryId) || !['fr', 'en', 'pt', 'ar'].includes(language) ||
+        !/^[A-Z_]{2,40}$/.test(contractType) || !title || !body ||
+        !Number.isInteger(version) || version < 1 || version > 1000) {
+      return res.status(400).json({ error: 'Invalid contract template fields' });
+    }
+    if (!(await canManageEmploymentCountry(countryId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Country-scoped administration permission required' });
+    }
+    const [country] = await db.select().from(countries).where(eq(countries.id, countryId)).limit(1);
+    if (!country || !(country.supportedLanguages || []).includes(language)) {
+      return res.status(400).json({ error: 'Language is not enabled for this country' });
+    }
+    const [template] = await db.insert(employmentContractTemplates).values({
+      countryId, language, contractType, version, title, body, status: 'DRAFT',
+      createdByProfileId: ctx.profileId,
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_CONTRACT_TEMPLATE_CREATED',
+      entityType: 'employment_contract_template', entityId: template.id,
+      details: { language, contractType, version },
+    });
+    res.status(201).json({ template });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'This template version already exists' });
+    console.error('Create employment contract template error:', err);
+    res.status(500).json({ error: 'Unable to create contract template' });
+  }
+});
+
+app.patch('/api/employment/contract-templates/:id/review', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const templateId = String(req.params.id);
+    const status = String(req.body?.status || '').toUpperCase();
+    const legalReviewReference = String(req.body?.legalReviewReference || '').trim().slice(0, 500);
+    if (!isValidUuid(templateId) || !['REVIEW', 'APPROVED', 'RETIRED'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid template review action' });
+    }
+    const [current] = await db.select().from(employmentContractTemplates)
+      .where(eq(employmentContractTemplates.id, templateId)).limit(1);
+    if (!current) return res.status(404).json({ error: 'Template not found' });
+    if (!(await canManageEmploymentCountry(current.countryId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Country-scoped administration permission required' });
+    }
+    if (status === 'APPROVED' && (!legalReviewReference || req.body?.legalReviewConfirmed !== true)) {
+      return res.status(400).json({ error: 'Explicit legal review confirmation and its reference are required' });
+    }
+    const [updated] = await db.update(employmentContractTemplates).set({
+      status, legalReviewReference: status === 'APPROVED' ? legalReviewReference : current.legalReviewReference,
+      validatedByProfileId: status === 'APPROVED' ? ctx.profileId : current.validatedByProfileId,
+      validatedAt: status === 'APPROVED' ? new Date() : current.validatedAt,
+      updatedAt: new Date(),
+    }).where(eq(employmentContractTemplates.id, templateId)).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: 'EMPLOYMENT_CONTRACT_TEMPLATE_REVIEWED',
+      entityType: 'employment_contract_template', entityId: templateId,
+      details: { fromStatus: current.status, toStatus: status, legalReviewReference: status === 'APPROVED' ? legalReviewReference : null },
+    });
+    res.json({ template: updated });
+  } catch (err) {
+    console.error('Review employment contract template error:', err);
+    res.status(500).json({ error: 'Unable to review contract template' });
+  }
+});
+
+app.get('/api/employment/contract-templates', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const countryId = String(req.query.countryId || '');
+    if (!isValidUuid(countryId)) return res.status(400).json({ error: 'Valid countryId is required' });
+    if (!(await canManageEmploymentCountry(countryId, req.authCtx!.profileId, req.authCtx!.roles))) {
+      return res.status(403).json({ error: 'Country-scoped administration permission required' });
+    }
+    const templates = await db.select().from(employmentContractTemplates)
+      .where(eq(employmentContractTemplates.countryId, countryId))
+      .orderBy(desc(employmentContractTemplates.createdAt)).limit(100);
+    res.json({ templates });
+  } catch (err) {
+    console.error('List employment contract templates error:', err);
+    res.status(500).json({ error: 'Unable to list contract templates' });
+  }
+});
+
+app.get('/api/employment/organizations/:organizationId/contract-templates', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const organizationId = String(req.params.organizationId);
+    if (!isValidUuid(organizationId) || !(await canManageEmploymentOrg(organizationId, req.authCtx!.profileId, req.authCtx!.roles))) {
+      return res.status(404).json({ error: 'Organization not found or access denied' });
+    }
+    const [organization] = await db.select({ countryId: organizations.countryId })
+      .from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+    if (!organization) return res.status(404).json({ error: 'Organization not found' });
+    const templates = await db.select({
+      id: employmentContractTemplates.id, countryId: employmentContractTemplates.countryId,
+      language: employmentContractTemplates.language, contractType: employmentContractTemplates.contractType,
+      version: employmentContractTemplates.version, title: employmentContractTemplates.title,
+      legalReviewReference: employmentContractTemplates.legalReviewReference,
+    }).from(employmentContractTemplates).where(and(
+      eq(employmentContractTemplates.countryId, organization.countryId),
+      eq(employmentContractTemplates.status, 'APPROVED')
+    )).orderBy(desc(employmentContractTemplates.updatedAt)).limit(100);
+    res.json({ templates });
+  } catch (err) {
+    console.error('List employer contract templates error:', err);
+    res.status(500).json({ error: 'Unable to list approved contract templates' });
+  }
+});
+
+app.post('/api/employment/applications/:id/contracts', requireAuth, rateLimit(5, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    const templateId = String(req.body?.templateId || '');
+    const language = String(req.body?.language || '').toLowerCase();
+    if (!isValidUuid(applicationId) || !isValidUuid(templateId) ||
+        !['fr', 'en', 'pt', 'ar'].includes(language)) {
+      return res.status(400).json({ error: 'Invalid contract creation request' });
+    }
+    const [application] = await db.select().from(jobApplications)
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application || application.status !== 'HIRED') {
+      return res.status(409).json({ error: 'A contract can only be drafted after the candidate accepts an offer' });
+    }
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(404).json({ error: 'Application not found or access denied' });
+    }
+    const [offer] = await db.select().from(employmentOffers).where(and(
+      eq(employmentOffers.applicationId, application.id),
+      eq(employmentOffers.candidateProfileId, application.candidateProfileId),
+      eq(employmentOffers.status, 'ACCEPTED')
+    )).orderBy(desc(employmentOffers.version)).limit(1);
+    if (!offer) return res.status(409).json({ error: 'Accepted employment offer not found' });
+    const [existing] = await db.select({ id: employmentContracts.id }).from(employmentContracts)
+      .where(eq(employmentContracts.offerId, offer.id)).limit(1);
+    if (existing) return res.status(409).json({ error: 'A contract draft already exists for this accepted offer', contractId: existing.id });
+    const [template] = await db.select().from(employmentContractTemplates).where(and(
+      eq(employmentContractTemplates.id, templateId),
+      eq(employmentContractTemplates.countryId, offer.countryId),
+      eq(employmentContractTemplates.language, language),
+      eq(employmentContractTemplates.status, 'APPROVED'),
+      or(eq(employmentContractTemplates.contractType, offer.contractType), eq(employmentContractTemplates.contractType, 'ALL'))
+    )).limit(1);
+    if (!template) return res.status(409).json({ error: 'No legally reviewed and approved template matches this country, language and contract type' });
+    const [country] = await db.select().from(countries).where(eq(countries.id, offer.countryId)).limit(1);
+    const [organization] = await db.select().from(organizations).where(eq(organizations.id, offer.organizationId)).limit(1);
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.id, offer.candidateProfileId)).limit(1);
+    const [candidateIdentity] = candidate
+      ? await db.select({ fullName: profiles.fullName, email: profiles.email }).from(profiles).where(eq(profiles.id, candidate.profileId)).limit(1)
+      : [];
+    if (!country || !organization || !candidate || !candidateIdentity) {
+      return res.status(409).json({ error: 'Required country, employer or candidate data is incomplete' });
+    }
+    const termsSnapshot = {
+      generatedAt: new Date().toISOString(),
+      country: { iso2: country.iso2, iso3: country.iso3, name: country.nameFr, currency: country.defaultCurrency },
+      employer: { legalName: organization.name, registrationNumber: organization.registrationNumber },
+      candidate: { fullName: candidateIdentity.fullName, email: candidateIdentity.email },
+      offer: {
+        id: offer.id, version: offer.version, jobTitle: offer.jobTitleSnapshot, contractType: offer.contractType,
+        salaryAmount: offer.salaryAmount, salaryBasis: offer.salaryBasis, salaryCurrency: offer.salaryCurrency,
+        payFrequency: offer.payFrequency, startDate: offer.startDate, workLocation: offer.workLocation,
+        weeklyHours: offer.weeklyHours, probationDays: offer.probationDays, benefits: offer.benefits,
+        additionalConditions: offer.additionalConditions, localLawNotice: offer.localLawNotice,
+      },
+      template: { id: template.id, title: template.title, version: template.version, language: template.language,
+        body: template.body, legalReviewReference: template.legalReviewReference },
+    };
+    const [contract] = await db.insert(employmentContracts).values({
+      offerId: offer.id, applicationId: application.id, organizationId: offer.organizationId,
+      candidateProfileId: offer.candidateProfileId, countryId: offer.countryId,
+      templateId: template.id, templateVersion: template.version, language,
+      status: 'DRAFT', termsSnapshot, createdByProfileId: ctx.profileId,
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_CONTRACT_DRAFT_CREATED',
+      entityType: 'employment_contract', entityId: contract.id,
+      details: { offerId: offer.id, templateId: template.id, templateVersion: template.version },
+    });
+    res.status(201).json({ contract });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'A contract already exists for this offer' });
+    console.error('Create employment contract draft error:', err);
+    res.status(500).json({ error: 'Unable to create employment contract draft' });
+  }
+});
+
+app.post('/api/employment/contracts/:id/generate-pdf', requireAuth, rateLimit(5, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const contractId = String(req.params.id);
+    if (!isValidUuid(contractId)) return res.status(400).json({ error: 'Invalid contract ID' });
+    const [contract] = await db.select().from(employmentContracts)
+      .where(eq(employmentContracts.id, contractId)).limit(1);
+    if (!contract) return res.status(404).json({ error: 'Contract not found' });
+    if (!(await canManageEmploymentOrg(contract.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(403).json({ error: 'Only authorized employer members can generate a contract draft PDF' });
+    }
+    if (contract.status !== 'DRAFT') return res.status(409).json({ error: 'Only draft contracts can be rendered' });
+    if (contract.documentStoragePath) return res.status(409).json({ error: 'A draft PDF already exists; create a new contract version to replace it' });
+    const terms = contract.termsSnapshot as Record<string, any>;
+    let pdf: Buffer;
+    try {
+      pdf = renderEmploymentContractDraftPdf(terms);
+    } catch (renderError: any) {
+      return res.status(422).json({ error: renderError?.message || 'Contract template cannot be rendered' });
+    }
+    const sha256 = crypto.createHash('sha256').update(pdf).digest('hex');
+    const documentVersion = 1;
+    const storagePath = `employment-contracts/${String(terms.country?.iso2 || 'XX').toUpperCase()}/${contract.id}/draft-v${documentVersion}.pdf`;
+    const bucket = getPrivateEmploymentBucket();
+    const file = bucket.file(storagePath);
+    await file.save(pdf, {
+      resumable: false,
+      validation: 'crc32c',
+      metadata: {
+        contentType: 'application/pdf',
+        cacheControl: 'private, no-store, max-age=0',
+        metadata: { sha256, contractId: contract.id, documentVersion: String(documentVersion), classification: 'confidential-employment-contract' },
+      },
+    });
+    const generatedAt = new Date();
+    const [updated] = await db.update(employmentContracts).set({
+      documentStoragePath: storagePath, documentSha256: sha256,
+      documentSizeBytes: pdf.length, documentGeneratedAt: generatedAt,
+      documentVersion, updatedAt: generatedAt,
+    }).where(and(eq(employmentContracts.id, contract.id), isNull(employmentContracts.documentStoragePath))).returning();
+    if (!updated) {
+      await file.delete({ ignoreNotFound: true }).catch(() => undefined);
+      return res.status(409).json({ error: 'Contract PDF was generated concurrently; reload the contract' });
+    }
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: String(terms.country?.iso2 || '').toUpperCase() || null,
+      action: 'EMPLOYMENT_CONTRACT_DRAFT_PDF_GENERATED',
+      entityType: 'employment_contract', entityId: contract.id,
+      details: { sha256, sizeBytes: pdf.length, documentVersion, storagePath },
+    });
+    res.status(201).json({
+      contractId: contract.id, status: updated.status, documentVersion,
+      sha256, sizeBytes: pdf.length, generatedAt: generatedAt.toISOString(),
+      downloadEndpoint: `/api/employment/contracts/${contract.id}/document`,
+      signatureStatus: 'NOT_SIGNED',
+    });
+  } catch (err) {
+    console.error('Generate employment contract PDF error:', err);
+    res.status(500).json({ error: 'Unable to generate contract draft PDF' });
+  }
+});
+
+app.get('/api/employment/contracts/:id/document', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const contractId = String(req.params.id);
+    if (!isValidUuid(contractId)) return res.status(400).json({ error: 'Invalid contract ID' });
+    const [contract] = await db.select().from(employmentContracts)
+      .where(eq(employmentContracts.id, contractId)).limit(1);
+    if (!contract || !contract.documentStoragePath || !contract.documentSha256) {
+      return res.status(404).json({ error: 'Contract document not found' });
+    }
+    const [candidate] = await db.select({ id: candidateProfiles.id }).from(candidateProfiles)
+      .where(and(eq(candidateProfiles.id, contract.candidateProfileId), eq(candidateProfiles.profileId, ctx.profileId))).limit(1);
+    const isEmployerMember = await canManageEmploymentOrg(contract.organizationId, ctx.profileId, ctx.roles);
+    if (!candidate && !isEmployerMember) return res.status(404).json({ error: 'Contract document not found' });
+    const [pdf] = await getPrivateEmploymentBucket().file(contract.documentStoragePath).download();
+    const actualSha256 = crypto.createHash('sha256').update(pdf).digest('hex');
+    if (actualSha256 !== contract.documentSha256 || pdf.length !== contract.documentSizeBytes) {
+      await db.insert(auditLogs).values({
+        actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+        action: 'EMPLOYMENT_CONTRACT_DOCUMENT_INTEGRITY_FAILURE',
+        entityType: 'employment_contract', entityId: contract.id,
+        details: { expectedSha256: contract.documentSha256, actualSha256, expectedSize: contract.documentSizeBytes, actualSize: pdf.length },
+      }).catch((auditError) => console.error('Contract integrity audit failed:', auditError));
+      return res.status(409).json({ error: 'Contract document integrity check failed; access blocked' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', String(pdf.length));
+    res.setHeader('Content-Disposition', `attachment; filename="kazi-contract-${contract.id}-v${contract.documentVersion}.pdf"`);
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(pdf);
+  } catch (err) {
+    console.error('Download employment contract PDF error:', err);
+    res.status(500).json({ error: 'Unable to retrieve contract document' });
+  }
+});
+
+app.get('/api/employment/me/contracts', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select({ id: candidateProfiles.id }).from(candidateProfiles)
+      .where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ contracts: [] });
+    const rows = await db.select({ contract: employmentContracts, organizationName: organizations.name, countryName: countries.nameFr })
+      .from(employmentContracts).innerJoin(organizations, eq(employmentContracts.organizationId, organizations.id))
+      .innerJoin(countries, eq(employmentContracts.countryId, countries.id))
+      .where(eq(employmentContracts.candidateProfileId, candidate.id))
+      .orderBy(desc(employmentContracts.createdAt)).limit(50);
+    res.json({ contracts: rows.map((row) => ({ ...row.contract, organizationName: row.organizationName, countryName: row.countryName })) });
+  } catch (err) {
+    console.error('Candidate employment contracts error:', err);
+    res.status(500).json({ error: 'Unable to load employment contracts' });
+  }
+});
+
+app.get('/api/employment/organizations/:organizationId/contracts', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const organizationId = String(req.params.organizationId);
+    if (!isValidUuid(organizationId) || !(await canManageEmploymentOrg(organizationId, req.authCtx!.profileId, req.authCtx!.roles))) {
+      return res.status(404).json({ error: 'Organization not found or access denied' });
+    }
+    const contracts = await db.select().from(employmentContracts)
+      .where(eq(employmentContracts.organizationId, organizationId))
+      .orderBy(desc(employmentContracts.createdAt)).limit(100);
+    res.json({ contracts });
+  } catch (err) {
+    console.error('Organization employment contracts error:', err);
+    res.status(500).json({ error: 'Unable to load organization contracts' });
+  }
+});
+
+app.post('/api/employment/applications/:id/offers', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [application] = await db.select().from(jobApplications)
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const [job] = await db.select().from(jobPosts).where(eq(jobPosts.id, application.jobPostId)).limit(1);
+    if (!job || !(await canManageEmploymentOrg(job.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(404).json({ error: 'Application not found or access denied' });
+    }
+    if (application.status !== 'OFFER') {
+      return res.status(409).json({ error: 'Move the application to OFFER before sending an employment offer' });
+    }
+    const [verification] = await db.select({ status: employerVerifications.status })
+      .from(employerVerifications).where(eq(employerVerifications.organizationId, job.organizationId)).limit(1);
+    if (verification?.status !== 'VERIFIED') {
+      return res.status(403).json({ error: 'Verified employer status is required' });
+    }
+    const [country] = await db.select().from(countries).where(eq(countries.id, job.countryId)).limit(1);
+    if (!country) return res.status(409).json({ error: 'Country configuration is unavailable' });
+
+    const salaryAmount = Number(req.body?.salaryAmount);
+    const salaryBasis = String(req.body?.salaryBasis || 'GROSS').toUpperCase();
+    const payFrequency = String(req.body?.payFrequency || 'MONTH').toUpperCase();
+    const startDate = String(req.body?.startDate || '');
+    const workLocation = String(req.body?.workLocation || '').trim().slice(0, 240);
+    const weeklyHours = req.body?.weeklyHours == null || req.body.weeklyHours === '' ? null : Number(req.body.weeklyHours);
+    const probationDays = req.body?.probationDays == null || req.body.probationDays === '' ? null : Number(req.body.probationDays);
+    const benefits = req.body?.benefits == null ? null : String(req.body.benefits).trim().slice(0, 3000);
+    const additionalConditions = req.body?.additionalConditions == null ? null : String(req.body.additionalConditions).trim().slice(0, 5000);
+    const localLawNotice = req.body?.localLawNotice == null ? null : String(req.body.localLawNotice).trim().slice(0, 3000);
+    const expiresInDays = Number(req.body?.expiresInDays ?? 7);
+    const startDateTime = new Date(`${startDate}T00:00:00.000Z`);
+    if (!Number.isFinite(salaryAmount) || salaryAmount <= 0 || salaryAmount > 1_000_000_000 ||
+        !['GROSS', 'NET'].includes(salaryBasis) || !['HOUR', 'WEEK', 'MONTH', 'YEAR'].includes(payFrequency) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startDateTime.getTime()) ||
+        startDateTime.toISOString().slice(0, 10) !== startDate ||
+        startDate < new Date().toISOString().slice(0, 10) ||
+        !workLocation || (weeklyHours !== null && (!Number.isFinite(weeklyHours) || weeklyHours <= 0 || weeklyHours > 168)) ||
+        (probationDays !== null && (!Number.isInteger(probationDays) || probationDays < 0 || probationDays > 365)) ||
+        !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 30) {
+      return res.status(400).json({ error: 'Invalid offer terms. Check salary, pay frequency, start date, location and expiry.' });
+    }
+    const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+    const offer = await db.transaction(async (tx) => {
+      const previous = await tx.select({ version: employmentOffers.version })
+        .from(employmentOffers).where(eq(employmentOffers.applicationId, application.id))
+        .orderBy(desc(employmentOffers.version)).limit(1);
+      const version = (previous[0]?.version || 0) + 1;
+      await tx.update(employmentOffers).set({ status: 'SUPERSEDED', updatedAt: new Date() })
+        .where(and(eq(employmentOffers.applicationId, application.id), eq(employmentOffers.status, 'SENT')));
+      const [created] = await tx.insert(employmentOffers).values({
+        applicationId: application.id, jobPostId: job.id, organizationId: job.organizationId,
+        candidateProfileId: application.candidateProfileId, countryId: job.countryId, version,
+        status: 'SENT', jobTitleSnapshot: job.title, contractType: job.contractType,
+        salaryAmount: salaryAmount.toFixed(2), salaryBasis, salaryCurrency: country.defaultCurrency,
+        payFrequency, startDate, workLocation, weeklyHours: weeklyHours === null ? null : weeklyHours.toFixed(2),
+        probationDays, benefits, additionalConditions, localLawNotice, expiresAt,
+        createdByProfileId: ctx.profileId,
+      }).returning();
+      return created;
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: country.iso2, action: 'EMPLOYMENT_OFFER_SENT',
+      entityType: 'employment_offer', entityId: offer.id,
+      details: { applicationId, version: offer.version, salaryCurrency: offer.salaryCurrency },
+    });
+    await notifyEmploymentCandidate(application.candidateProfileId, {
+      type: 'EMPLOYMENT_OFFER_SENT', eventKey: `employment:offer-sent:${offer.id}`,
+      titleFr: 'Proposition d’embauche reçue', titleEn: 'Employment offer received', titleAr: 'تلقيت عرض عمل', titlePt: 'Recebeu uma proposta de emprego',
+      bodyFr: `Vous avez reçu une proposition pour « ${job.title} ». Répondez avant le ${expiresAt.toLocaleDateString('fr-FR')}.`,
+      bodyEn: `You received an offer for “${job.title}”. Respond by ${expiresAt.toLocaleDateString('en-GB')}.`,
+      bodyAr: `تلقيت عرض عمل لوظيفة « ${job.title} ». يرجى الرد قبل ${expiresAt.toLocaleDateString('en-GB')}.`,
+      bodyPt: `Recebeu uma proposta para « ${job.title} ». Responda até ${expiresAt.toLocaleDateString('pt-PT')}.`,
+    });
+    res.status(201).json({ offer });
+  } catch (err: any) {
+    if (isPgUniqueViolation(err)) return res.status(409).json({ error: 'An active offer already exists or the offer version changed concurrently. Refresh and retry.' });
+    console.error('Create employment offer error:', err);
+    res.status(500).json({ error: 'Unable to create employment offer' });
+  }
+});
+
+app.get('/api/employment/me/offers', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ offers: [] });
+    const now = new Date();
+    await db.update(employmentOffers).set({ status: 'EXPIRED', updatedAt: now })
+      .where(and(eq(employmentOffers.candidateProfileId, candidate.id), eq(employmentOffers.status, 'SENT'), sql`${employmentOffers.expiresAt} < ${now}`));
+    const offers = await db.select({
+      offer: employmentOffers, organizationName: organizations.name,
+      countryName: countries.nameFr,
+    }).from(employmentOffers)
+      .innerJoin(organizations, eq(employmentOffers.organizationId, organizations.id))
+      .innerJoin(countries, eq(employmentOffers.countryId, countries.id))
+      .where(eq(employmentOffers.candidateProfileId, candidate.id))
+      .orderBy(desc(employmentOffers.createdAt)).limit(50);
+    res.json({ offers: offers.map((row) => ({ ...row.offer, organizationName: row.organizationName, countryName: row.countryName })) });
+  } catch (err) {
+    console.error('Candidate employment offers error:', err);
+    res.status(500).json({ error: 'Unable to load employment offers' });
+  }
+});
+
+app.patch('/api/employment/offers/:id/response', requireAuth, rateLimit(10, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const offerId = String(req.params.id);
+    const response = String(req.body?.response || '').toUpperCase();
+    const responseNote = req.body?.note == null ? null : String(req.body.note).trim().slice(0, 1000);
+    if (!isValidUuid(offerId) || !['ACCEPTED', 'DECLINED'].includes(response)) {
+      return res.status(400).json({ error: 'Invalid offer response' });
+    }
+    const [candidate] = await db.select({ id: candidateProfiles.id })
+      .from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Offer not found' });
+    const [current] = await db.select().from(employmentOffers).where(and(
+      eq(employmentOffers.id, offerId), eq(employmentOffers.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!current) return res.status(404).json({ error: 'Offer not found' });
+    if (current.status !== 'SENT') return res.status(409).json({ error: 'This offer is no longer awaiting a response' });
+    if (current.expiresAt.getTime() <= Date.now()) {
+      await db.update(employmentOffers).set({ status: 'EXPIRED', updatedAt: new Date() })
+        .where(and(eq(employmentOffers.id, offerId), eq(employmentOffers.status, 'SENT')));
+      return res.status(409).json({ error: 'This offer has expired' });
+    }
+    await db.transaction(async (tx) => {
+      const [updated] = await tx.update(employmentOffers).set({
+        status: response, candidateResponseAt: new Date(), candidateResponseNote: responseNote, updatedAt: new Date(),
+      }).where(and(
+        eq(employmentOffers.id, offerId), eq(employmentOffers.candidateProfileId, candidate.id),
+        eq(employmentOffers.status, 'SENT'), gte(employmentOffers.expiresAt, new Date())
+      )).returning();
+      if (!updated) throw new Error('Offer was updated concurrently or has expired');
+      if (response === 'ACCEPTED') {
+        const [application] = await tx.update(jobApplications).set({ status: 'HIRED', updatedAt: new Date() })
+          .where(and(eq(jobApplications.id, current.applicationId), eq(jobApplications.status, 'OFFER'))).returning();
+        if (!application) throw new Error('Application is no longer awaiting an offer decision');
+        await tx.insert(jobApplicationEvents).values({
+          applicationId: current.applicationId, actorProfileId: ctx.profileId,
+          fromStatus: 'OFFER', toStatus: 'HIRED', note: 'Candidate accepted employment offer',
+        });
+      }
+    });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      action: response === 'ACCEPTED' ? 'EMPLOYMENT_OFFER_ACCEPTED' : 'EMPLOYMENT_OFFER_DECLINED',
+      entityType: 'employment_offer', entityId: offerId,
+      details: { applicationId: current.applicationId, version: current.version },
+    });
+    await notifyEmploymentOrganization(current.organizationId, {
+      type: `EMPLOYMENT_OFFER_${response}`, eventKey: `employment:offer-response:${offerId}:${response}`,
+      titleFr: response === 'ACCEPTED' ? 'Proposition acceptée' : 'Proposition refusée',
+      titleEn: response === 'ACCEPTED' ? 'Offer accepted' : 'Offer declined',
+      titleAr: response === 'ACCEPTED' ? 'تم قبول العرض' : 'تم رفض العرض',
+      titlePt: response === 'ACCEPTED' ? 'Proposta aceite' : 'Proposta recusada',
+      bodyFr: `Le candidat a ${response === 'ACCEPTED' ? 'accepté' : 'refusé'} la proposition pour « ${current.jobTitleSnapshot} ».`,
+      bodyEn: `The candidate has ${response === 'ACCEPTED' ? 'accepted' : 'declined'} the offer for “${current.jobTitleSnapshot}”.`,
+      bodyAr: `قام المرشح ${response === 'ACCEPTED' ? 'بقبول' : 'برفض'} العرض لوظيفة « ${current.jobTitleSnapshot} ».`,
+      bodyPt: `O candidato ${response === 'ACCEPTED' ? 'aceitou' : 'recusou'} a proposta para « ${current.jobTitleSnapshot} ».`,
+    });
+    res.json({ success: true, response });
+  } catch (err: any) {
+    if (String(err?.message || '').includes('concurrently') || String(err?.message || '').includes('no longer awaiting')) {
+      return res.status(409).json({ error: err.message });
+    }
+    console.error('Respond to employment offer error:', err);
+    res.status(500).json({ error: 'Unable to save offer response' });
+  }
+});
 
 app.get('/api/opportunities', async (req, res) => {
   try {
@@ -2216,18 +3944,29 @@ app.post('/api/messages', requireAuth, async (req: AuthRequest, res) => {
 app.get('/api/notifications', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
-    const rows = ctx.roles.includes('SUPER_ADMIN')
-      ? await db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(20)
-      : await db
-          .select()
-          .from(notifications)
-          .where(eq(notifications.profileId, ctx.profileId))
-          .orderBy(desc(notifications.createdAt))
-          .limit(20);
+    const rows = await db.select().from(notifications)
+      .where(eq(notifications.profileId, ctx.profileId))
+      .orderBy(desc(notifications.createdAt)).limit(50);
     res.json({ notifications: rows });
   } catch (err) {
     console.error('Notifications error:', err);
     res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+app.patch('/api/notifications/:id/read', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const id = String(req.params.id);
+    if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid notification ID' });
+    const [updated] = await db.update(notifications).set({ isRead: true })
+      .where(and(eq(notifications.id, id), eq(notifications.profileId, ctx.profileId)))
+      .returning({ id: notifications.id, isRead: notifications.isRead });
+    if (!updated) return res.status(404).json({ error: 'Notification not found' });
+    res.json({ notification: updated });
+  } catch (err) {
+    console.error('Mark notification read error:', err);
+    res.status(500).json({ error: 'Failed to update notification' });
   }
 });
 
@@ -2291,20 +4030,33 @@ app.post('/api/disputes', requireAuth, async (req: AuthRequest, res) => {
 app.get('/api/enterprise/overview', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
-    const allOrgs = await db.select().from(organizations);
-    const memberLinks = await db
-      .select()
-      .from(orgMembers)
-      .where(eq(orgMembers.profileId, ctx.profileId));
+    const isSuperAdmin = ctx.roles.includes('SUPER_ADMIN');
+    const memberLinks = isSuperAdmin
+      ? []
+      : await db
+          .select({ organizationId: orgMembers.organizationId })
+          .from(orgMembers)
+          .where(and(eq(orgMembers.profileId, ctx.profileId), eq(orgMembers.isActive, true)));
 
-    const accessibleOrgIds = new Set(memberLinks.map((m) => m.organizationId));
-    const orgs = ctx.roles.includes('SUPER_ADMIN')
-      ? allOrgs
-      : allOrgs.filter((o) => o.ownerProfileId === ctx.profileId || accessibleOrgIds.has(o.id));
+    const memberOrgIds = [...new Set(memberLinks.map((m) => m.organizationId))];
+    const orgs = isSuperAdmin
+      ? await db.select().from(organizations)
+      : memberOrgIds.length
+        ? await db.select().from(organizations).where(
+            or(eq(organizations.ownerProfileId, ctx.profileId), inArray(organizations.id, memberOrgIds))
+          )
+        : await db.select().from(organizations).where(eq(organizations.ownerProfileId, ctx.profileId));
 
-    const targetOrg = orgs[0] || null;
+    const requestedOrgId = typeof req.query.organizationId === 'string' ? req.query.organizationId : '';
+    const targetOrg = requestedOrgId
+      ? orgs.find((org) => org.id === requestedOrgId) || null
+      : orgs[0] || null;
+
+    if (requestedOrgId && !targetOrg) {
+      return res.status(404).json({ error: 'Organization not found or access denied' });
+    }
     if (!targetOrg) {
-      return res.json({ organization: null, members: [], interventions: [], country: null });
+      return res.json({ organization: null, organizations: orgs, members: [], interventions: [], country: null });
     }
 
     const [orgCountry] = await db
@@ -2334,6 +4086,7 @@ app.get('/api/enterprise/overview', requireAuth, async (req: AuthRequest, res) =
 
     res.json({
       organization: targetOrg,
+      organizations: orgs,
       country: orgCountry || null,
       members: members.map((m) => ({
         ...m.member,

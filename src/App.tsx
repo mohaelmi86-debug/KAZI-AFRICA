@@ -21,6 +21,7 @@ import { KaziSkillsModule } from './modules/kazi-skills/KaziSkillsModule';
 import { EnterpriseModule } from './modules/companies/EnterpriseModule';
 import { AdminConsoleModule } from './modules/administration/AdminConsoleModule';
 import { OpportunitiesModule } from './modules/home/OpportunitiesModule';
+import { EmploymentModule } from './modules/employment/EmploymentModule';
 import { CountriesExplorerModule } from './modules/home/CountriesExplorerModule';
 import {
   AboutPage,
@@ -95,6 +96,7 @@ const KaziFooter: React.FC = () => {
         { label: t.footer.linkCategories, to: '/professionals' },
         { label: t.footer.linkKaziSkills, to: '/skills' },
         { label: t.footer.linkOpportunities, to: '/opportunities' },
+        { label: 'Emploi & recrutement', to: '/employment' },
       ],
     },
     {
@@ -282,6 +284,7 @@ const AppShell: React.FC = () => {
             <Route path="/pro-space" element={<ProWorkspaceModule />} />
             <Route path="/skills" element={<KaziSkillsModule />} />
             <Route path="/opportunities" element={<OpportunitiesModule />} />
+            <Route path="/employment" element={<EmploymentModule />} />
             <Route path="/countries" element={<CountriesExplorerModule />} />
             <Route path="/enterprise" element={<EnterpriseModule />} />
             <Route path="/admin" element={<AdminConsoleModule />} />
