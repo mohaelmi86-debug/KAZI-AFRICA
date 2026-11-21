@@ -37,3 +37,26 @@ Variables serveur :
 - Appliquer les migrations et vérifier les permissions Firebase/SQL avant activation.
 
 **État réel :** le code du worker est présent et appelable ; aucun daemon ClamAV, secret, ordonnanceur ni environnement de production n'a été configuré ou testé par ce commit. Tant que `CLAMAV_HOST` n'est pas défini et que le worker n'est pas exécuté, les documents restent en quarantaine.
+
+
+## Déploiement Docker Compose (serveur privé)
+
+Fichiers livrés :
+
+- `Dockerfile.employment-scanner` : image minimale du worker, exécutée avec l'utilisateur non-root `bun`.
+- `compose.employment-scanner.yml` : ClamAV et worker sur le même réseau Docker ; le port 3310 n'est pas publié sur Internet.
+- `.dockerignore` et exclusion du dossier local `secrets/` de Git.
+
+Préparation sur le serveur :
+
+1. Installer Docker Engine et le plugin Docker Compose.
+2. Créer un fichier `.env` non versionné avec les variables PostgreSQL nécessaires au worker (`SQL_HOST`, `SQL_USER`, `SQL_PASSWORD`, `SQL_DB_NAME`). `SQL_HOST` doit être joignable depuis le réseau Docker.
+3. Créer `secrets/firebase-service-account.json` à partir d'un compte de service dédié. Lui accorder uniquement les droits nécessaires au bucket Firebase privé ; ne jamais committer ce fichier.
+4. Vérifier que `firebase-applet-config.json` cible bien le projet Firebase attendu et que le bucket est celui de production/préproduction voulu.
+5. Lancer : `docker compose -f compose.employment-scanner.yml up -d --build`.
+6. Contrôler les logs : `docker compose -f compose.employment-scanner.yml logs -f employment-document-worker clamav`.
+7. Vérifier les signatures ClamAV à jour, l'accès PostgreSQL et Firebase, puis réaliser les tests EICAR et PDF sain en préproduction.
+
+Le worker tourne en boucle et traite un lot toutes les 60 secondes. Le service ClamAV ne publie aucun port hôte ; seul le worker le joint sur le réseau Docker. Le worker est non-root, son système de fichiers est en lecture seule et le compte de service est monté en lecture seule.
+
+**Attention :** ce Compose est un artefact de déploiement prêt à configurer, pas une preuve de déploiement. Aucun serveur, compte de service, base de données, bucket, secret ni signature antivirus n'a été provisionné ou activé par les commits GitHub. Ne pas lancer en production avant validation en préproduction.
