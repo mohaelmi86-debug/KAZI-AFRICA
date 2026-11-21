@@ -229,5 +229,17 @@ Ces routes sont ajoutées au périmètre livré de la PR. Le détail d'offre est
 - API recruteur `POST /api/employment/interviews/:id/evaluation` : évaluation privée par recruteur, score 1–5, recommandation, points forts et réserves ; une seule évaluation par évaluateur et entretien, modifiable.
 - Interface : planification depuis la candidature et espace candidat « Mes entretiens » avec confirmation/refus.
 
-La migration doit être appliquée avant activation de ces endpoints en base. L'interface de consultation et de saisie des évaluations recruteur reste à finaliser ; les endpoints et tables sont présents.
+La migration doit être appliquée avant activation de ces endpoints en base. L'interface recruteur de consultation des entretiens et de saisie des évaluations est livrée dans la tranche suivante.
 
+
+
+## 11. Tranche espace recruteur — entretiens et évaluations
+
+- API recruteur `GET /api/employment/jobs/:id/interviews` : vérifie l'accès à l'organisation, renvoie les entretiens des candidatures de l'offre, les réponses des candidats et les évaluations internes.
+- Les évaluations sont limitées aux membres RH autorisés de l'organisation ; le candidat ne reçoit jamais les notes internes ni les appréciations des recruteurs.
+- Interface recruteur : consultation des entretiens par candidature, date/fuseau, mode, réponse candidat et nombre d'évaluations.
+- Formulaire d'évaluation : note de 1 à 5, recommandation (très favorable, favorable, à revoir, défavorable), points forts et réserves.
+- Un recruteur peut modifier sa propre évaluation ; les évaluations des autres membres restent visibles en lecture aux membres autorisés.
+- Rechargement du pipeline après enregistrement afin de refléter les données persistées.
+
+Cette tranche complète le cycle entretien/évaluation côté recruteur. Elle ne remplace pas les tests d'intégration en base, ni l'application des migrations dans l'environnement cible.
