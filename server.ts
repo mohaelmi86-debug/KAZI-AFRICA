@@ -4,7 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { createServer as createViteServer } from 'vite';
 import { getPrivateEmploymentBucket } from './src/lib/firebase-admin.ts';
 import { validateRuntimeEnvironment } from './src/config/env.ts';
@@ -1059,6 +1059,14 @@ app.get('/api/employment/jobs', rateLimit(90, 60_000), async (req, res) => {
   try {
     const countryIso2 = req.query.countryIso2 ? String(req.query.countryIso2).toUpperCase() : null;
     const q = req.query.q ? String(req.query.q).trim().slice(0, 100) : '';
+    const city = req.query.city ? String(req.query.city).trim().slice(0, 80) : '';
+    const requestedContract = req.query.contractType ? String(req.query.contractType).toUpperCase() : '';
+    const requestedWorkMode = req.query.workMode ? String(req.query.workMode).toUpperCase() : '';
+    const allowedContracts = new Set(['PERMANENT', 'FIXED_TERM', 'TEMPORARY', 'PART_TIME', 'INTERNSHIP', 'APPRENTICESHIP', 'SEASONAL', 'GRADUATE', 'PUBLIC_SERVICE']);
+    const allowedWorkModes = new Set(['ONSITE', 'HYBRID', 'REMOTE']);
+    const contractType = allowedContracts.has(requestedContract) ? requestedContract : null;
+    const workMode = allowedWorkModes.has(requestedWorkMode) ? requestedWorkMode : null;
+    const now = new Date();
     const rows = await db.select({
       id: jobPosts.id,
       referenceCode: jobPosts.referenceCode,
@@ -1090,6 +1098,10 @@ app.get('/api/employment/jobs', rateLimit(90, 60_000), async (req, res) => {
         eq(jobPosts.status, 'PUBLISHED'),
         eq(countries.status, 'ACTIVE'),
         countryIso2 ? eq(countries.iso2, countryIso2) : undefined,
+        contractType ? eq(jobPosts.contractType, contractType) : undefined,
+        workMode ? eq(jobPosts.workMode, workMode) : undefined,
+        city ? ilike(jobPosts.city, `%${city}%`) : undefined,
+        or(isNull(jobPosts.applicationDeadline), gte(jobPosts.applicationDeadline, now)),
         q ? or(ilike(jobPosts.title, `%${q}%`), ilike(jobPosts.description, `%${q}%`), ilike(jobPosts.city, `%${q}%`)) : undefined
       ))
       .orderBy(desc(jobPosts.publishedAt))
