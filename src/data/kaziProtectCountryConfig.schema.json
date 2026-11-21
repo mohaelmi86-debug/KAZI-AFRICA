@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kazi.africa/schemas/kazi-protect-country-config.v1.json",
+  "title": "KAZI PROTECT country configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "countryIso2", "status", "currency", "languages", "products", "releaseGates"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "countryIso2": { "type": "string", "pattern": "^[A-Z]{2}$" },
+    "status": { "enum": ["NOT_REVIEWED", "IN_REVIEW", "CONFIGURING", "TESTING", "READY", "ACTIVE", "SUSPENDED"] },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "languages": { "type": "array", "items": { "type": "string", "minLength": 2 }, "uniqueItems": true },
+    "regulatory": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "reviewStatus": { "enum": ["NOT_STARTED", "IN_PROGRESS", "APPROVED", "REJECTED", "EXPIRED"] },
+        "reviewedAt": { "type": ["string", "null"], "format": "date-time" },
+        "reviewerOrganization": { "type": ["string", "null"] },
+        "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" }
+      }
+    },
+    "products": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["productCode", "category", "status", "requiresAuthorizedPartner"],
+        "properties": {
+          "productCode": { "type": "string", "pattern": "^[A-Z0-9_]{3,64}$" },
+          "category": { "enum": ["WARRANTY", "INSURANCE", "QUALITY_SERVICE", "PAYMENT_PROTECTION"] },
+          "status": { "enum": ["DISABLED", "PENDING_REVIEW", "APPROVED", "ACTIVE", "SUSPENDED"] },
+          "requiresAuthorizedPartner": { "type": "boolean" },
+          "partnerIds": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+          "termsVersion": { "type": ["string", "null"] },
+          "disclosureVersion": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "releaseGates": {
+      "type": "object", "additionalProperties": false,
+      "required": ["legalReview", "partnerVerified", "wordingApproved", "claimsProcessReady", "privacyReview", "paymentFlowVerified", "countryUatPassed"],
+      "properties": {
+        "legalReview": { "type": "boolean" }, "partnerVerified": { "type": "boolean" },
+        "wordingApproved": { "type": "boolean" }, "claimsProcessReady": { "type": "boolean" },
+        "privacyReview": { "type": "boolean" }, "paymentFlowVerified": { "type": "boolean" },
+        "countryUatPassed": { "type": "boolean" }
+      }
+    }
+  }
+}

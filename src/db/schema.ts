@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -619,6 +619,157 @@ export const supportTickets = pgTable('support_tickets', {
   status: text('status').notNull().default('OPEN'), // OPEN | IN_PROGRESS | CLOSED
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// ============================================================================
+// 7. KAZI PROTECT GLOBAL (CONFIGURATION, PARTNERS, CERTIFICATES, CLAIMS, AUDIT)
+// ============================================================================
+
+export const kaziProtectCountrySettings = pgTable('kazi_protect_country_settings', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull().unique(),
+  status: text('status').notNull().default('NOT_REVIEWED'),
+  currencyCode: text('currency_code'),
+  languages: jsonb('languages').$type<string[]>().notNull().default([]),
+  regulatoryReviewStatus: text('regulatory_review_status').notNull().default('NOT_STARTED'),
+  regulatoryReviewedAt: timestamp('regulatory_reviewed_at', { withTimezone: true }),
+  reviewerOrganization: text('reviewer_organization'),
+  regulatoryEvidenceRefs: jsonb('regulatory_evidence_refs').$type<string[]>().notNull().default([]),
+  releaseGates: jsonb('release_gates').$type<Record<string, boolean>>().notNull().default({
+    legalReview: false, partnerVerified: false, wordingApproved: false, claimsProcessReady: false,
+    privacyReview: false, paymentFlowVerified: false, countryUatPassed: false,
+  }),
+  configVersion: integer('config_version').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const kaziProtectProducts = pgTable('kazi_protect_products', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  productCode: text('product_code').notNull().unique(),
+  name: text('name').notNull(),
+  category: text('category').notNull(),
+  description: text('description').notNull().default(''),
+  requiresAuthorizedPartner: boolean('requires_authorized_partner').notNull().default(false),
+  isGloballyAvailable: boolean('is_globally_available').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const kaziProtectCountryProducts = pgTable('kazi_protect_country_products', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull(),
+  productId: uuid('product_id').references(() => kaziProtectProducts.id, { onDelete: 'restrict' }).notNull(),
+  status: text('status').notNull().default('DISABLED'),
+  partnerIds: jsonb('partner_ids').$type<string[]>().notNull().default([]),
+  termsVersion: text('terms_version'),
+  disclosureVersion: text('disclosure_version'),
+  localConfig: jsonb('local_config').$type<Record<string, unknown>>().notNull().default({}),
+  approvedBy: text('approved_by'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex('kazi_protect_country_product_unique_idx').on(table.countryIso2, table.productId)]);
+
+export const kaziProtectPartners = pgTable('kazi_protect_partners', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull(),
+  partnerType: text('partner_type').notNull(),
+  legalName: text('legal_name').notNull(),
+  registrationReference: text('registration_reference'),
+  authorizationReference: text('authorization_reference'),
+  authorizationVerifiedAt: timestamp('authorization_verified_at', { withTimezone: true }),
+  authorizationEvidenceRef: text('authorization_evidence_ref'),
+  territories: jsonb('territories').$type<string[]>().notNull().default([]),
+  status: text('status').notNull().default('PENDING_VERIFICATION'),
+  contactConfig: jsonb('contact_config').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const kaziProtectCertificates = pgTable('kazi_protect_certificates', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  certificateNumber: text('certificate_number').notNull().unique(),
+  verificationTokenHash: text('verification_token_hash').notNull().unique(),
+  countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull(),
+  ownerProfileId: uuid('owner_profile_id').references(() => profiles.id, { onDelete: 'restrict' }),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'restrict' }),
+  bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'restrict' }),
+  protectedObjectType: text('protected_object_type').notNull(),
+  protectedObjectId: uuid('protected_object_id'),
+  protectionKind: text('protection_kind').notNull(),
+  issuerType: text('issuer_type').notNull(),
+  issuerPartnerId: uuid('issuer_partner_id').references(() => kaziProtectPartners.id, { onDelete: 'restrict' }),
+  externalPolicyReference: text('external_policy_reference'),
+  coverageSummary: jsonb('coverage_summary').$type<Record<string, unknown>>().notNull().default({}),
+  exclusions: jsonb('exclusions').$type<string[]>().notNull().default([]),
+  startsAt: timestamp('starts_at', { withTimezone: true }),
+  endsAt: timestamp('ends_at', { withTimezone: true }),
+  status: text('status').notNull().default('DRAFT'),
+  documentStorageRef: text('document_storage_ref'),
+  issuedAt: timestamp('issued_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('kazi_protect_certificates_booking_contractual_warranty_uidx')
+    .on(table.bookingId, table.protectionKind)
+    .where(sql\`booking_id IS NOT NULL AND protection_kind = 'CONTRACTUAL_WARRANTY'\`),
+]);
+
+export const kaziProtectClaims = pgTable('kazi_protect_claims', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  claimNumber: text('claim_number').notNull().unique(),
+  countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull(),
+  certificateId: uuid('certificate_id').references(() => kaziProtectCertificates.id, { onDelete: 'restrict' }),
+  claimantProfileId: uuid('claimant_profile_id').references(() => profiles.id, { onDelete: 'restrict' }).notNull(),
+  claimType: text('claim_type').notNull(),
+  description: text('description').notNull(),
+  evidenceRefs: jsonb('evidence_refs').$type<string[]>().notNull().default([]),
+  status: text('status').notNull().default('SUBMITTED'),
+  assignedPartnerId: uuid('assigned_partner_id').references(() => kaziProtectPartners.id, { onDelete: 'restrict' }),
+  insurerDecisionReference: text('insurer_decision_reference'),
+  resolutionSummary: text('resolution_summary'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('kazi_protect_claims_claimant_idempotency_idx').on(table.claimantProfileId, table.idempotencyKey),
+  index('kazi_protect_claims_country_status_idx').on(table.countryIso2, table.status, table.submittedAt),
+]);
+
+export const kaziProtectHandovers = pgTable('kazi_protect_handovers', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'restrict' }).notNull().unique(),
+  countryId: uuid('country_id').references(() => countries.id, { onDelete: 'restrict' }).notNull(),
+  clientProfileId: uuid('client_profile_id').references(() => profiles.id, { onDelete: 'restrict' }).notNull(),
+  professionalProfileId: uuid('professional_profile_id').references(() => profiles.id, { onDelete: 'restrict' }).notNull(),
+  checklist: jsonb('checklist').$type<Array<{ item: string; completed: boolean; note?: string }>>().notNull().default([]),
+  beforeEvidenceRefs: jsonb('before_evidence_refs').$type<string[]>().notNull().default([]),
+  afterEvidenceRefs: jsonb('after_evidence_refs').$type<string[]>().notNull().default([]),
+  workSummary: text('work_summary').notNull(),
+  status: text('status').notNull().default('DRAFT'),
+  submittedByProfileId: uuid('submitted_by_profile_id').references(() => profiles.id, { onDelete: 'restrict' }),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  clientReservations: jsonb('client_reservations').$type<string[]>().notNull().default([]),
+  clientResponse: text('client_response'),
+  respondedAt: timestamp('responded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index('kazi_protect_handovers_country_status_idx').on(table.countryId, table.status, table.createdAt),
+]);
+
+export const kaziProtectAuditEvents = pgTable('kazi_protect_audit_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  countryIso2: text('country_iso2').references(() => countries.iso2, { onUpdate: 'cascade', onDelete: 'restrict' }).notNull(),
+  actorUid: text('actor_uid'),
+  entityType: text('entity_type').notNull(),
+  entityId: uuid('entity_id').notNull(),
+  action: text('action').notNull(),
+  beforeState: jsonb('before_state').$type<Record<string, unknown>>(),
+  afterState: jsonb('after_state').$type<Record<string, unknown>>(),
+  requestId: text('request_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index('kazi_protect_audit_entity_idx').on(table.entityType, table.entityId, table.createdAt)]);
 
 // ============================================================================
 // RELATIONS DRIZZLE
