@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local service-account credentials and deployment secrets
+secrets/
