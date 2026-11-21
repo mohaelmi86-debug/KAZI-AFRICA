@@ -198,3 +198,14 @@ La première tranche fonctionnelle est maintenant présente dans la branche de d
 Cette livraison est une fondation opérationnelle, pas encore un ATS complet. Restent notamment à développer : gestion complète du profil et des CV avec stockage privé et antivirus, onboarding/vérification employeur, invitation et rôles RH détaillés, pagination/tri avancés, modération, entretiens, évaluations, offres d'embauche contractuelles, notifications, alertes, consentements et demandes RGPD/locales, analytics, abonnements, marque blanche, traductions complètes FR/EN/PT/AR et activation administrable du module pays.
 
 La migration doit être appliquée à l'environnement cible avant utilisation. Les contrôles de compilation, tests automatisés, tests d'isolation multi-tenant et tests de non-régression doivent être exécutés avant fusion dans `main`.
+
+### Deuxième tranche — profil candidat et espace recruteur
+
+- API authentifiée `GET/PATCH /api/employment/candidates/me` : consultation et mise à jour du titre, résumé, ville, compétences, années d'expérience et visibilité.
+- Mise à jour de profil avec liste de compétences dédupliquée et limitée, validation des longueurs et journalisation.
+- API `GET /api/employment/employer/jobs?organizationId=...` : offres de l'entreprise et décompte des candidatures par statut, après vérification d'appartenance.
+- Interface candidat : formulaire de profil professionnel et contrôle de visibilité.
+- Interface recruteur : liste des offres, volumes par statut, ouverture des dossiers et progression des candidats dans les transitions autorisées.
+- Les données de contact du candidat ne sont pas ajoutées au retour de l'API pipeline.
+
+**Limite documentaire importante :** le dépôt de CV n'est pas encore activé. Il ne faut pas stocker un CV dans un champ texte ni exposer un fichier par URL publique. La prochaine tranche doit mettre en place un bucket privé, contrôle MIME/taille, checksum, antivirus, URLs signées temporaires et consentement candidat avant accès employeur.
