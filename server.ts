@@ -2128,6 +2128,7 @@ app.post('/api/employment/applications/:id/offers', requireAuth, rateLimit(10, 6
     if (!country) return res.status(409).json({ error: 'Country configuration is unavailable' });
 
     const salaryAmount = Number(req.body?.salaryAmount);
+    const salaryBasis = String(req.body?.salaryBasis || 'GROSS').toUpperCase();
     const payFrequency = String(req.body?.payFrequency || 'MONTH').toUpperCase();
     const startDate = String(req.body?.startDate || '');
     const workLocation = String(req.body?.workLocation || '').trim().slice(0, 240);
@@ -2139,7 +2140,7 @@ app.post('/api/employment/applications/:id/offers', requireAuth, rateLimit(10, 6
     const expiresInDays = Number(req.body?.expiresInDays ?? 7);
     const startDateTime = new Date(`${startDate}T00:00:00.000Z`);
     if (!Number.isFinite(salaryAmount) || salaryAmount <= 0 || salaryAmount > 1_000_000_000 ||
-        !['HOUR', 'WEEK', 'MONTH', 'YEAR'].includes(payFrequency) ||
+        !['GROSS', 'NET'].includes(salaryBasis) || !['HOUR', 'WEEK', 'MONTH', 'YEAR'].includes(payFrequency) ||
         !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startDateTime.getTime()) ||
         startDateTime.toISOString().slice(0, 10) !== startDate ||
         startDate < new Date().toISOString().slice(0, 10) ||
@@ -2160,7 +2161,7 @@ app.post('/api/employment/applications/:id/offers', requireAuth, rateLimit(10, 6
         applicationId: application.id, jobPostId: job.id, organizationId: job.organizationId,
         candidateProfileId: application.candidateProfileId, countryId: job.countryId, version,
         status: 'SENT', jobTitleSnapshot: job.title, contractType: job.contractType,
-        salaryAmount: salaryAmount.toFixed(2), salaryCurrency: country.defaultCurrency,
+        salaryAmount: salaryAmount.toFixed(2), salaryBasis, salaryCurrency: country.defaultCurrency,
         payFrequency, startDate, workLocation, weeklyHours: weeklyHours === null ? null : weeklyHours.toFixed(2),
         probationDays, benefits, additionalConditions, localLawNotice, expiresAt,
         createdByProfileId: ctx.profileId,
