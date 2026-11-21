@@ -277,3 +277,11 @@ Limites : cette tranche collecte les informations déclaratives mais ne vérifie
 - Migration complémentaire : `drizzle/0004_employer_verification_evidence.sql`.
 
 Cette référence ne remplace pas la pièce justificative : elle assure la traçabilité de la vérification humaine effectuée hors plateforme jusqu'à l'intégration du dépôt documentaire sécurisé.
+
+
+### Interface entreprise — dossier de vérification
+
+- Onglet « Vérification entreprise » dans l'espace Emploi.
+- Consultation du statut du dossier et du retour administratif.
+- Soumission et mise à jour des informations légales et du contact professionnel.
+- L'interface explique explicitement que la déclaration n'est pas une preuve de vérification et que les justificatifs seront collectés via le canal sécurisé à venir.
