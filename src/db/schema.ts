@@ -757,6 +757,59 @@ export const employmentOffers = pgTable(
   ]
 );
 
+export const employmentContractTemplates = pgTable(
+  'employment_contract_templates',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    countryId: uuid('country_id').references(() => countries.id, { onDelete: 'cascade' }).notNull(),
+    language: text('language').notNull(),
+    contractType: text('contract_type').notNull(),
+    version: integer('version').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    status: text('status').notNull().default('DRAFT'), // DRAFT | REVIEW | APPROVED | RETIRED
+    legalReviewReference: text('legal_review_reference'),
+    validatedByProfileId: uuid('validated_by_profile_id').references(() => profiles.id),
+    validatedAt: timestamp('validated_at'),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('employment_contract_templates_country_lang_type_version_unique_idx')
+      .on(table.countryId, table.language, table.contractType, table.version),
+    index('employment_contract_templates_country_status_idx').on(table.countryId, table.status),
+  ]
+);
+
+export const employmentContracts = pgTable(
+  'employment_contracts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    offerId: uuid('offer_id').references(() => employmentOffers.id, { onDelete: 'restrict' }).notNull().unique(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'restrict' }).notNull(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'restrict' }).notNull(),
+    candidateProfileId: uuid('candidate_profile_id').references(() => candidateProfiles.id, { onDelete: 'restrict' }).notNull(),
+    countryId: uuid('country_id').references(() => countries.id).notNull(),
+    templateId: uuid('template_id').references(() => employmentContractTemplates.id, { onDelete: 'restrict' }).notNull(),
+    templateVersion: integer('template_version').notNull(),
+    language: text('language').notNull(),
+    status: text('status').notNull().default('DRAFT'), // DRAFT | PENDING_SIGNATURE | PARTIALLY_SIGNED | SIGNED | ACTIVE | AMENDED | TERMINATED | EXPIRED | CANCELLED
+    termsSnapshot: jsonb('terms_snapshot').$type<Record<string, unknown>>().notNull(),
+    documentStoragePath: text('document_storage_path'),
+    signatureProvider: text('signature_provider'),
+    providerEnvelopeId: text('provider_envelope_id'),
+    signedAt: timestamp('signed_at'),
+    createdByProfileId: uuid('created_by_profile_id').references(() => profiles.id).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('employment_contracts_org_status_idx').on(table.organizationId, table.status, table.createdAt),
+    index('employment_contracts_candidate_status_idx').on(table.candidateProfileId, table.status, table.createdAt),
+  ]
+);
+
 export const candidateDocumentShares = pgTable(
   'candidate_document_shares',
   {
