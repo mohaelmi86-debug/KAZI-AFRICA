@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import dotenv from 'dotenv';
 import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { createServer as createViteServer } from 'vite';
+import { getPrivateEmploymentBucket } from './src/lib/firebase-admin.ts';
 import { validateRuntimeEnvironment } from './src/config/env.ts';
 import { db } from './src/db/index.ts';
 import { ensureDatabaseSeeded } from './src/db/seed.ts';
@@ -26,6 +27,8 @@ import {
   evaluations,
   jobPosts,
   candidateProfiles,
+  candidateDocuments,
+  candidateDocumentShares,
   jobApplications,
   jobApplicationEvents,
   jobInterviews,
@@ -1276,6 +1279,226 @@ app.post('/api/employment/jobs/:id/applications', requireAuth, rateLimit(10, 60_
 });
 
 
+
+// Candidate documents are uploaded server-side into a private quarantine prefix.
+const EMPLOYMENT_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024;
+const EMPLOYMENT_DOCUMENT_ALLOWED_TYPES = new Set(['CV', 'CERTIFICATE', 'DIPLOMA', 'OTHER']);
+
+app.post('/api/employment/candidates/me/documents', requireAuth, rateLimit(8, 60_000), express.raw({ type: 'application/pdf', limit: EMPLOYMENT_DOCUMENT_MAX_BYTES }), async (req: AuthRequest, res) => {
+  let storagePath: string | null = null;
+  try {
+    const ctx = req.authCtx!;
+    const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!buffer || buffer.length < 8 || buffer.length > EMPLOYMENT_DOCUMENT_MAX_BYTES) {
+      return res.status(400).json({ error: 'A PDF file between 8 bytes and 8 MB is required' });
+    }
+    if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/pdf' ||
+        buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
+      return res.status(415).json({ error: 'Only genuine PDF files are accepted' });
+    }
+    const documentType = String(req.query.documentType || 'CV').toUpperCase();
+    if (!EMPLOYMENT_DOCUMENT_ALLOWED_TYPES.has(documentType)) return res.status(400).json({ error: 'Invalid document type' });
+    const rawName = String(req.query.fileName || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf';
+    const originalFileName = rawName.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 180) || 'document.pdf';
+    if (!originalFileName.toLowerCase().endsWith('.pdf')) return res.status(400).json({ error: 'The file name must end with .pdf' });
+
+    let [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) {
+      await db.insert(candidateProfiles).values({
+        profileId: ctx.profileId, countryIso2: ctx.countryIso2, visibility: 'PRIVATE',
+      }).onConflictDoNothing();
+      [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    }
+    if (!candidate) return res.status(500).json({ error: 'Candidate profile could not be initialized' });
+
+    const id = crypto.randomUUID();
+    storagePath = `employment/candidates/${ctx.profileId}/quarantine/${id}.pdf`;
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    const bucket = getPrivateEmploymentBucket();
+    const file = bucket.file(storagePath);
+    await file.save(buffer, {
+      resumable: false,
+      validation: 'crc32c',
+      metadata: {
+        contentType: 'application/pdf',
+        cacheControl: 'private, no-store, max-age=0',
+        metadata: { candidateProfileId: candidate.id, documentId: id, scanStatus: 'QUARANTINED', sha256 },
+      },
+    });
+
+    const [document] = await db.insert(candidateDocuments).values({
+      id, candidateProfileId: candidate.id, documentType, originalFileName, storagePath,
+      mimeType: 'application/pdf', sizeBytes: buffer.length, sha256, scanStatus: 'QUARANTINED',
+    }).returning();
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_UPLOADED',
+      entityType: 'candidate_document', entityId: document.id,
+      details: { documentType, sizeBytes: buffer.length, sha256, scanStatus: 'QUARANTINED' },
+    });
+    return res.status(201).json({ document: {
+      id: document.id, documentType: document.documentType, originalFileName: document.originalFileName,
+      sizeBytes: document.sizeBytes, scanStatus: document.scanStatus, uploadedAt: document.uploadedAt,
+    }, message: 'Document stocké en quarantaine. Il ne sera pas transmis aux recruteurs avant analyse antivirus et consentement explicite.' });
+  } catch (err) {
+    if (storagePath) {
+      try { await getPrivateEmploymentBucket().file(storagePath).delete({ ignoreNotFound: true }); } catch { /* best-effort cleanup */ }
+    }
+    console.error('Candidate document upload error:', err);
+    return res.status(503).json({ error: 'Secure document storage is unavailable; the document was not accepted' });
+  }
+});
+
+app.get('/api/employment/candidates/me/documents', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.json({ documents: [] });
+    const documents = await db.select({
+      id: candidateDocuments.id, documentType: candidateDocuments.documentType,
+      originalFileName: candidateDocuments.originalFileName, sizeBytes: candidateDocuments.sizeBytes,
+      scanStatus: candidateDocuments.scanStatus, uploadedAt: candidateDocuments.uploadedAt,
+    }).from(candidateDocuments)
+      .where(eq(candidateDocuments.candidateProfileId, candidate.id))
+      .orderBy(desc(candidateDocuments.uploadedAt)).limit(50);
+    return res.json({ documents });
+  } catch (err) {
+    console.error('Candidate documents list error:', err);
+    return res.status(500).json({ error: 'Unable to load candidate documents' });
+  }
+});
+
+app.delete('/api/employment/candidates/me/documents/:id', requireAuth, rateLimit(20, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const id = String(req.params.id);
+    if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid document ID' });
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Document not found' });
+    const [document] = await db.select().from(candidateDocuments).where(and(
+      eq(candidateDocuments.id, id), eq(candidateDocuments.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!document || document.scanStatus === 'DELETED') return res.status(404).json({ error: 'Document not found' });
+    await getPrivateEmploymentBucket().file(document.storagePath).delete({ ignoreNotFound: true });
+    await db.update(candidateDocuments).set({ scanStatus: 'DELETED', updatedAt: new Date() }).where(eq(candidateDocuments.id, id));
+    await db.delete(candidateDocumentShares).where(eq(candidateDocumentShares.documentId, id));
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_DELETED',
+      entityType: 'candidate_document', entityId: id, details: { previousScanStatus: document.scanStatus },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Candidate document delete error:', err);
+    return res.status(503).json({ error: 'Unable to securely delete this document right now' });
+  }
+});
+
+app.post('/api/employment/candidates/me/documents/:id/share', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const documentId = String(req.params.id);
+    const applicationId = String(req.body?.applicationId || '');
+    if (!isValidUuid(documentId) || !isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid document or application ID' });
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Candidate profile not found' });
+    const [document] = await db.select().from(candidateDocuments).where(and(
+      eq(candidateDocuments.id, documentId), eq(candidateDocuments.candidateProfileId, candidate.id),
+      sql`${candidateDocuments.scanStatus} <> 'DELETED'`
+    )).limit(1);
+    if (!document) return res.status(404).json({ error: 'Document not found' });
+    const [application] = await db.select().from(jobApplications).where(and(
+      eq(jobApplications.id, applicationId), eq(jobApplications.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!application) return res.status(404).json({ error: 'Your application was not found' });
+    await db.insert(candidateDocumentShares).values({ documentId, applicationId, consentedAt: new Date(), revokedAt: null })
+      .onConflictDoUpdate({
+        target: [candidateDocumentShares.documentId, candidateDocumentShares.applicationId],
+        set: { consentedAt: new Date(), revokedAt: null },
+      });
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_SHARE_CONSENTED',
+      entityType: 'candidate_document', entityId: documentId,
+      details: { applicationId, scanStatus: document.scanStatus },
+    });
+    return res.json({ success: true, scanStatus: document.scanStatus, message: document.scanStatus === 'CLEAN'
+      ? 'Consentement enregistré : le recruteur autorisé pourra accéder au document.'
+      : 'Consentement enregistré. Le document reste inaccessible au recruteur jusqu’à validation antivirus.' });
+  } catch (err) {
+    console.error('Candidate document share consent error:', err);
+    return res.status(500).json({ error: 'Unable to save document sharing consent' });
+  }
+});
+
+app.delete('/api/employment/candidates/me/documents/:id/share/:applicationId', requireAuth, rateLimit(30, 60_000), async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const documentId = String(req.params.id), applicationId = String(req.params.applicationId);
+    if (!isValidUuid(documentId) || !isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid document or application ID' });
+    const [candidate] = await db.select().from(candidateProfiles).where(eq(candidateProfiles.profileId, ctx.profileId)).limit(1);
+    if (!candidate) return res.status(404).json({ error: 'Candidate profile not found' });
+    const [document] = await db.select({ id: candidateDocuments.id }).from(candidateDocuments).where(and(
+      eq(candidateDocuments.id, documentId), eq(candidateDocuments.candidateProfileId, candidate.id)
+    )).limit(1);
+    if (!document) return res.status(404).json({ error: 'Document not found' });
+    await db.update(candidateDocumentShares).set({ revokedAt: new Date() }).where(and(
+      eq(candidateDocumentShares.documentId, documentId), eq(candidateDocumentShares.applicationId, applicationId)
+    ));
+    await db.insert(auditLogs).values({
+      actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
+      countryIso2: ctx.countryIso2, action: 'EMPLOYMENT_CANDIDATE_DOCUMENT_SHARE_REVOKED',
+      entityType: 'candidate_document', entityId: documentId, details: { applicationId },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Candidate document share revoke error:', err);
+    return res.status(500).json({ error: 'Unable to revoke document sharing' });
+  }
+});
+
+app.get('/api/employment/applications/:id/documents', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = req.authCtx!;
+    const applicationId = String(req.params.id);
+    if (!isValidUuid(applicationId)) return res.status(400).json({ error: 'Invalid application ID' });
+    const [row] = await db.select({
+      applicationId: jobApplications.id, organizationId: jobPosts.organizationId,
+    }).from(jobApplications).innerJoin(jobPosts, eq(jobApplications.jobPostId, jobPosts.id))
+      .where(eq(jobApplications.id, applicationId)).limit(1);
+    if (!row || !(await canManageEmploymentOrg(row.organizationId, ctx.profileId, ctx.roles))) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+    const shared = await db.select({
+      id: candidateDocuments.id, documentType: candidateDocuments.documentType,
+      originalFileName: candidateDocuments.originalFileName, sizeBytes: candidateDocuments.sizeBytes,
+      scanStatus: candidateDocuments.scanStatus, consentedAt: candidateDocumentShares.consentedAt,
+      storagePath: candidateDocuments.storagePath,
+    }).from(candidateDocumentShares)
+      .innerJoin(candidateDocuments, eq(candidateDocumentShares.documentId, candidateDocuments.id))
+      .where(and(
+        eq(candidateDocumentShares.applicationId, applicationId),
+        sql`${candidateDocumentShares.revokedAt} IS NULL`,
+        sql`${candidateDocuments.scanStatus} <> 'DELETED'`
+      )).limit(30);
+    const documents = await Promise.all(shared.map(async (doc) => {
+      let downloadUrl: string | null = null;
+      if (doc.scanStatus === 'CLEAN') {
+        const [signed] = await getPrivateEmploymentBucket().file(doc.storagePath).getSignedUrl({
+          action: 'read', expires: Date.now() + 5 * 60 * 1000,
+          responseDisposition: `attachment; filename="${doc.originalFileName.replace(/["\\\\]/g, '')}"`,
+        });
+        downloadUrl = signed;
+      }
+      return { id: doc.id, documentType: doc.documentType, originalFileName: doc.originalFileName,
+        sizeBytes: doc.sizeBytes, scanStatus: doc.scanStatus, consentedAt: doc.consentedAt, downloadUrl };
+    }));
+    return res.json({ documents });
+  } catch (err) {
+    console.error('Employer shared documents read error:', err);
+    return res.status(500).json({ error: 'Unable to load shared documents' });
+  }
+});
 
 app.get('/api/employment/candidates/me', requireAuth, async (req: AuthRequest, res) => {
   try {
