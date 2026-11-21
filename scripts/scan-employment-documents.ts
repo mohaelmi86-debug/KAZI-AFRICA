@@ -1,15 +1,10 @@
 import 'dotenv/config';
-import net from 'node:net';
 import crypto from 'node:crypto';
 import { and, eq, lt, or } from 'drizzle-orm';
 import { db } from '../src/db/index.ts';
 import { candidateDocuments } from '../src/db/schema.ts';
 import { getPrivateEmploymentBucket } from '../src/lib/firebase-admin.ts';
-
-const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
-const CHUNK_BYTES = 64 * 1024;
-
-type ScanVerdict = 'CLEAN' | 'INFECTED';
+import { MAX_EMPLOYMENT_DOCUMENT_BYTES, scanBufferWithClamAv, type ClamAvConfig } from '../src/server/clamavScanner.ts';
 
 function requiredClamAvConfig() {
   const host = process.env.CLAMAV_HOST?.trim();
@@ -21,50 +16,7 @@ function requiredClamAvConfig() {
   return { host, port, timeoutMs };
 }
 
-/** Sends bytes to a private ClamAV clamd daemon using INSTREAM. No file is sent to a third party. */
-export function scanBufferWithClamAv(buffer: Buffer, config = requiredClamAvConfig()): Promise<ScanVerdict> {
-  if (!buffer.length || buffer.length > MAX_DOCUMENT_BYTES) return Promise.reject(new Error('Document size is outside the accepted range'));
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host: config.host, port: config.port });
-    let response = '';
-    let settled = false;
-    const finish = (error?: Error, verdict?: ScanVerdict) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (error) reject(error);
-      else resolve(verdict!);
-    };
-
-    socket.setTimeout(config.timeoutMs);
-    socket.once('timeout', () => finish(new Error('ClamAV scan timed out')));
-    socket.once('error', (error) => finish(new Error(`ClamAV connection failed: ${error.message}`)));
-    socket.on('data', (chunk: Buffer) => {
-      response += chunk.toString('utf8');
-      if (response.length > 4096) return finish(new Error('ClamAV returned an oversized response'));
-      if (!response.includes('\0') && !response.endsWith('\n')) return;
-      const result = response.replace(/\0/g, '').trim();
-      if (result.endsWith(' OK')) return finish(undefined, 'CLEAN');
-      if (result.includes(' FOUND')) return finish(undefined, 'INFECTED');
-      finish(new Error(`ClamAV scan failed: ${result.slice(0, 300)}`));
-    });
-
-    socket.once('connect', () => {
-      socket.write(Buffer.from('zINSTREAM\0', 'ascii'));
-      for (let offset = 0; offset < buffer.length; offset += CHUNK_BYTES) {
-        const chunk = buffer.subarray(offset, Math.min(offset + CHUNK_BYTES, buffer.length));
-        const length = Buffer.allocUnsafe(4);
-        length.writeUInt32BE(chunk.length, 0);
-        socket.write(length);
-        socket.write(chunk);
-      }
-      const terminator = Buffer.alloc(4);
-      socket.end(terminator);
-    });
-  });
-}
-
-async function processDocument(documentId: string, scannerConfig: ReturnType<typeof requiredClamAvConfig>) {
+async function processDocument(documentId: string, scannerConfig: ClamAvConfig) {
   const [claimed] = await db.update(candidateDocuments)
     .set({ scanStatus: 'SCANNING', updatedAt: new Date() })
     .where(and(
@@ -80,7 +32,7 @@ async function processDocument(documentId: string, scannerConfig: ReturnType<typ
 
   try {
     const [buffer] = await getPrivateEmploymentBucket().file(claimed.storagePath).download();
-    if (!Buffer.isBuffer(buffer) || buffer.length !== claimed.sizeBytes || buffer.length > MAX_DOCUMENT_BYTES) {
+    if (!Buffer.isBuffer(buffer) || buffer.length !== claimed.sizeBytes || buffer.length > MAX_EMPLOYMENT_DOCUMENT_BYTES) {
       throw new Error('Stored document size does not match trusted metadata');
     }
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
