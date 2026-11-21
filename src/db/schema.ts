@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -751,6 +751,7 @@ export const employmentOffers = pgTable(
   },
   (table) => [
     uniqueIndex('employment_offers_application_version_unique_idx').on(table.applicationId, table.version),
+    uniqueIndex('employment_offers_one_sent_per_application_idx').on(table.applicationId).where(sql`status = 'SENT'`),
     index('employment_offers_candidate_status_idx').on(table.candidateProfileId, table.status, table.createdAt),
     index('employment_offers_org_status_idx').on(table.organizationId, table.status, table.createdAt),
   ]
