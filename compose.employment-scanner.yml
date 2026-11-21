@@ -1,0 +1,49 @@
+services:
+  clamav:
+    image: clamav/clamav:1.4.3
+    restart: unless-stopped
+    expose:
+      - "3310"
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    networks:
+      - employment-scan
+
+  employment-document-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.employment-scanner
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      CLAMAV_TIMEOUT_MS: "30000"
+      EMPLOYMENT_SCAN_BATCH_SIZE: "10"
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
+    volumes:
+      - ./secrets/firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
+    depends_on:
+      - clamav
+    networks:
+      - employment-scan
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          bun run employment:scan-documents || echo "Employment document scan batch failed; retrying next interval"
+          sleep "$${SCAN_INTERVAL_SECONDS:-60}"
+        done
+
+networks:
+  employment-scan:
+
+volumes:
+  clamav-signatures:
