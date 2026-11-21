@@ -60,3 +60,16 @@ Préparation sur le serveur :
 Le worker tourne en boucle et traite un lot toutes les 60 secondes. Le service ClamAV ne publie aucun port hôte ; seul le worker le joint sur le réseau Docker. Le worker est non-root, son système de fichiers est en lecture seule et le compte de service est monté en lecture seule.
 
 **Attention :** ce Compose est un artefact de déploiement prêt à configurer, pas une preuve de déploiement. Aucun serveur, compte de service, base de données, bucket, secret ni signature antivirus n'a été provisionné ou activé par les commits GitHub. Ne pas lancer en production avant validation en préproduction.
+
+
+## CI vérifiée sur le HEAD actuel
+
+Le workflow GitHub Actions du commit `04c3c7e24087dddc8ef1a5a9b44234d2f67ece01` a réussi sur l'événement push :
+
+- validation TypeScript : succès ;
+- 5 tests automatisés du protocole ClamAV : succès ;
+- validation de la configuration Docker Compose : succès ;
+- construction de l'image Docker du worker : succès ;
+- build de production du frontend : succès.
+
+Ces contrôles valident le code, le conteneur et la configuration déclarative. Ils ne remplacent pas un test d'intégration avec un daemon ClamAV réel, Firebase Storage et PostgreSQL préproduction.
