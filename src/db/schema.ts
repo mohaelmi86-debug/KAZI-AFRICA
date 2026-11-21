@@ -480,6 +480,7 @@ export const notifications = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     profileId: uuid('profile_id').references(() => profiles.id, { onDelete: 'cascade' }).notNull(),
     type: text('type').notNull(),
+    eventKey: text('event_key'),
     titleFr: text('title_fr').notNull(),
     titleEn: text('title_en').notNull(),
     titleAr: text('title_ar').notNull(),
@@ -491,7 +492,10 @@ export const notifications = pgTable(
     isRead: boolean('is_read').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
-  (table) => [index('notifications_profile_idx').on(table.profileId)]
+  (table) => [
+    index('notifications_profile_idx').on(table.profileId),
+    uniqueIndex('notifications_event_key_unique_idx').on(table.eventKey),
+  ]
 );
 
 export const disputes = pgTable(
