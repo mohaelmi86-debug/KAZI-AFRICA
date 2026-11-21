@@ -96,6 +96,7 @@ const KaziFooter: React.FC = () => {
         { label: t.footer.linkCategories, to: '/professionals' },
         { label: t.footer.linkKaziSkills, to: '/skills' },
         { label: t.footer.linkOpportunities, to: '/opportunities' },
+        { label: 'Emploi & recrutement', to: '/employment' },
       ],
     },
     {
