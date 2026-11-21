@@ -702,6 +702,46 @@ export const jobApplicationEvents = pgTable('job_application_events', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => [index('job_application_events_application_created_idx').on(table.applicationId, table.createdAt)]);
 
+export const jobInterviews = pgTable(
+  'job_interviews',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    applicationId: uuid('application_id').references(() => jobApplications.id, { onDelete: 'cascade' }).notNull(),
+    scheduledByProfileId: uuid('scheduled_by_profile_id').references(() => profiles.id).notNull(),
+    startsAt: timestamp('starts_at').notNull(),
+    endsAt: timestamp('ends_at').notNull(),
+    timezone: text('timezone').notNull(),
+    mode: text('mode').notNull(), // VIDEO | PHONE | ONSITE
+    locationOrUrl: text('location_or_url'),
+    candidateResponse: text('candidate_response').notNull().default('PENDING'), // PENDING | CONFIRMED | DECLINED
+    status: text('status').notNull().default('SCHEDULED'), // SCHEDULED | COMPLETED | CANCELLED
+    candidateMessage: text('candidate_message'),
+    internalNotes: text('internal_notes'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [index('job_interviews_application_start_idx').on(table.applicationId, table.startsAt)]
+);
+
+export const jobInterviewEvaluations = pgTable(
+  'job_interview_evaluations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    interviewId: uuid('interview_id').references(() => jobInterviews.id, { onDelete: 'cascade' }).notNull(),
+    reviewerProfileId: uuid('reviewer_profile_id').references(() => profiles.id).notNull(),
+    score: integer('score').notNull(),
+    recommendation: text('recommendation').notNull(), // STRONG_YES | YES | HOLD | NO
+    strengths: text('strengths').notNull().default(''),
+    concerns: text('concerns').notNull().default(''),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_interview_evaluations_interview_reviewer_unique_idx').on(table.interviewId, table.reviewerProfileId),
+    index('job_interview_evaluations_interview_idx').on(table.interviewId),
+  ]
+);
+
 // ============================================================================
 // RELATIONS DRIZZLE
 // ============================================================================
