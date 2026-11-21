@@ -22,6 +22,10 @@ export const EmploymentModule: React.FC = () => {
   const [coverLetter, setCoverLetter] = useState('');
   const [applications, setApplications] = useState<Application[]>([]);
   const [employmentOffers, setEmploymentOffers] = useState<any[]>([]);
+  const [employmentContracts, setEmploymentContracts] = useState<any[]>([]);
+  const [employerContracts, setEmployerContracts] = useState<any[]>([]);
+  const [approvedContractTemplates, setApprovedContractTemplates] = useState<any[]>([]);
+  const [contractTemplateByApplication, setContractTemplateByApplication] = useState<Record<string, string>>({});
   const [offerDraft, setOfferDraft] = useState({ salaryAmount: '', salaryBasis: 'GROSS', payFrequency: 'MONTH', startDate: '', workLocation: '', weeklyHours: '40', probationDays: '', benefits: '', additionalConditions: '', localLawNotice: '', expiresInDays: '7' });
   const [applicationHistories, setApplicationHistories] = useState<Record<string, any[]>>({});
   const [expandedApplicationHistories, setExpandedApplicationHistories] = useState<Record<string, boolean>>({});
@@ -49,7 +53,7 @@ export const EmploymentModule: React.FC = () => {
   const [employmentNotifications, setEmploymentNotifications] = useState<any[]>([]);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'offers' | 'publish' | 'profile' | 'recruiter' | 'employerVerification' | 'adminVerifications'>('jobs');
+  const [view, setView] = useState<'jobs' | 'jobDetail' | 'applications' | 'interviews' | 'offers' | 'contracts' | 'publish' | 'profile' | 'recruiter' | 'employerVerification' | 'adminVerifications'>('jobs');
   const [candidate, setCandidate] = useState({ headline: '', summary: '', city: '', skillsText: '', experienceYears: '0', visibility: 'PRIVATE' });
   const [employerJobs, setEmployerJobs] = useState<any[]>([]);
   const [selectedJobId, setSelectedJobId] = useState('');
@@ -148,6 +152,35 @@ export const EmploymentModule: React.FC = () => {
     finally { setBusy(false); }
   };
 
+  const loadEmploymentContracts = async () => {
+    try { const result = await apiFetch<{ contracts: any[] }>('/api/employment/me/contracts'); setEmploymentContracts(result.contracts || []); }
+    catch (e: any) { setError(e.message || 'Impossible de charger vos contrats.'); }
+  };
+
+  const loadEmployerContractWorkspace = async () => {
+    if (!organization?.id) return;
+    try {
+      const [contractsResult, templatesResult] = await Promise.all([
+        apiFetch<{ contracts: any[] }>(`/api/employment/organizations/${organization.id}/contracts`),
+        apiFetch<{ templates: any[] }>(`/api/employment/organizations/${organization.id}/contract-templates`),
+      ]);
+      setEmployerContracts(contractsResult.contracts || []); setApprovedContractTemplates(templatesResult.templates || []);
+    } catch (e: any) { setEmployerContracts([]); setApprovedContractTemplates([]); setError(e.message || 'Impossible de charger les modèles et contrats.'); }
+  };
+
+  const createEmploymentContractDraft = async (applicationId: string) => {
+    const templateId = contractTemplateByApplication[applicationId];
+    const template = approvedContractTemplates.find((item) => item.id === templateId);
+    if (!template) { setError('Sélectionnez un modèle approuvé pour le pays et le type de contrat.'); return; }
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await apiFetch(`/api/employment/applications/${applicationId}/contracts`, { method: 'POST', body: JSON.stringify({ templateId, language: template.language }) });
+      await loadEmployerContractWorkspace();
+      setNotice('Brouillon de contrat créé à partir de la proposition acceptée. Il doit être relu avant toute signature.');
+    } catch (e: any) { setError(e.message || 'Impossible de créer le brouillon de contrat.'); }
+    finally { setBusy(false); }
+  };
+
   const loadApplications = async () => {
     try {
       const result = await apiFetch<{ applications: Application[] }>('/api/employment/me/applications');
@@ -162,6 +195,7 @@ export const EmploymentModule: React.FC = () => {
       void loadCandidate();
       void loadEmploymentNotifications();
       void loadEmploymentOffers();
+      void loadEmploymentContracts();
       return;
     }
     setOrganization(null);
@@ -172,6 +206,9 @@ export const EmploymentModule: React.FC = () => {
     setCandidateDocuments([]);
     setEmploymentNotifications([]);
     setEmploymentOffers([]);
+    setEmploymentContracts([]);
+    setEmployerContracts([]);
+    setApprovedContractTemplates([]);
   }, [authLoading, firebaseUser]);
 
   const toggleApplicationHistory = async (applicationId: string) => {
@@ -460,11 +497,12 @@ export const EmploymentModule: React.FC = () => {
           {firebaseUser && <>
             <button onClick={() => { setView('applications'); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'applications' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes candidatures</button>
             <button onClick={() => { setView('interviews'); void loadInterviews(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'interviews' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes entretiens</button>
+            <button onClick={() => { setView('contracts'); void loadEmploymentContracts(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'contracts' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes contrats</button>
             <button onClick={() => { setView('offers'); void loadEmploymentOffers(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'offers' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mes propositions</button>
             <button onClick={() => { setView('profile'); void loadCandidateDocuments(); void loadApplications(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'profile' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Mon profil</button>
           </>}
           {firebaseUser && organization && <>
-            <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
+            <button onClick={() => { setView('recruiter'); void loadEmployerJobs(); void loadEmployerContractWorkspace(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'recruiter' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Espace recruteur</button>
             <button onClick={() => { setView('employerVerification'); void loadEmployerVerification(); }} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'employerVerification' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Vérification entreprise</button>
             <button onClick={() => setView('publish')} className={`px-4 py-2 rounded-lg text-xs font-bold ${view === 'publish' ? 'bg-[#E9B66B] text-[#102D3A]' : 'bg-white/10 text-white'}`}>Publier une offre</button>
           </>}
@@ -548,6 +586,18 @@ export const EmploymentModule: React.FC = () => {
 
       {view === 'applications' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4"><div className="flex items-center justify-between"><h2 className="font-bold text-lg text-[#102D3A]">Suivi de mes candidatures</h2><button onClick={() => void loadApplications()} className="text-xs font-semibold text-[#087F70] inline-flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> Actualiser</button></div>{applications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature à afficher. Connectez-vous puis postulez à une offre.</p> : applications.map(app => <article key={app.id} className="border-t border-slate-100 py-3 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-semibold text-sm">{app.jobTitle}</div><div className="text-xs text-slate-500">{app.organizationName} · {app.jobCity} · {new Date(app.submittedAt).toLocaleDateString()}</div></div><div className="flex items-center gap-2"><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span>{['SUBMITTED','REVIEWING','SHORTLISTED','INTERVIEW'].includes(app.status) && <button disabled={busy} onClick={() => void withdrawApplication(app.id)} className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50">Retirer</button>}</div></div><button onClick={() => void toggleApplicationHistory(app.id)} className="text-xs font-semibold text-[#087F70]">{expandedApplicationHistories[app.id] ? 'Masquer l’historique' : 'Voir l’historique'}</button>{expandedApplicationHistories[app.id] && <div className="rounded-lg bg-slate-50 p-3 space-y-2">{(applicationHistories[app.id] || []).length === 0 ? <p className="text-xs text-slate-500">Aucun événement disponible.</p> : (applicationHistories[app.id] || []).map((event: any) => <div key={event.id} className="flex items-start justify-between gap-3 border-b border-slate-200 last:border-0 pb-2 last:pb-0"><div><div className="text-xs font-bold text-slate-700">{String(event.toStatus).replaceAll('_',' ')}</div>{event.note && <p className="text-xs text-slate-500 mt-0.5">{event.note}</p>}</div><time className="text-[10px] text-slate-500 whitespace-nowrap">{new Date(event.createdAt).toLocaleString()}</time></div>)}</div>}</article>)}</section>}
 
+      {view === 'contracts' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4">
+        <div className="flex items-center justify-between gap-3"><div><h2 className="font-bold text-lg text-[#102D3A]">Mes contrats</h2><p className="text-sm text-slate-500">Consultez les brouillons et l’état de vos contrats de travail.</p></div><button onClick={() => void loadEmploymentContracts()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>
+        {employmentContracts.length === 0 ? <p className="text-sm text-slate-500">Aucun contrat disponible. Un contrat sera préparé après acceptation de votre proposition.</p> : <div className="space-y-3">{employmentContracts.map(contract => {
+          const terms = contract.termsSnapshot || {}; const offer = terms.offer || {}; const template = terms.template || {};
+          return <article key={contract.id} className="rounded-xl border border-slate-200 p-4 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-bold text-sm text-[#102D3A]">{template.title || offer.jobTitle || 'Contrat de travail'}</h3><p className="text-xs text-slate-500">{contract.organizationName} · {contract.countryName} · {contract.language?.toUpperCase()}</p></div><span className="rounded-full bg-amber-50 text-amber-800 px-3 py-1 text-xs font-bold">{contract.status}</span></div>
+            <div className="grid sm:grid-cols-2 gap-2 text-xs text-slate-600"><div>Poste : <strong>{offer.jobTitle || '—'}</strong></div><div>Type : <strong>{offer.contractType || '—'}</strong></div><div>Rémunération : <strong>{offer.salaryAmount || '—'} {offer.salaryCurrency || ''} ({offer.salaryBasis === 'NET' ? 'net' : 'brut'})</strong></div><div>Début prévu : <strong>{offer.startDate || '—'}</strong></div><div>Employeur : <strong>{terms.employer?.legalName || contract.organizationName}</strong></div><div>Modèle : <strong>{template.version ? 'v' + template.version : '—'}</strong></div></div>
+            <p className="text-[11px] text-amber-800 bg-amber-50 rounded-lg p-3">Brouillon de travail : ce document n’est pas signé et aucune signature électronique n’a été enregistrée.</p>
+          </article>;
+        })}</div>}
+      </section>}
+
       {view === 'offers' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-4">
         <div className="flex items-center justify-between gap-3"><div><h2 className="font-bold text-lg text-[#102D3A]">Mes propositions d’embauche</h2><p className="text-xs text-slate-500">Consultez les conditions et répondez avant la date limite.</p></div><button onClick={() => void loadEmploymentOffers()} className="text-xs font-semibold text-[#087F70]">Actualiser</button></div>
         {employmentOffers.length === 0 ? <p className="text-sm text-slate-500">Aucune proposition reçue pour le moment.</p> : employmentOffers.map((offer: any) => <article key={offer.id} className="rounded-xl border border-slate-200 p-4 space-y-3">
@@ -593,6 +643,10 @@ export const EmploymentModule: React.FC = () => {
       </div></section>}
 
       {view === 'recruiter' && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 space-y-5"><div className="flex items-center justify-between gap-2"><div><h2 className="font-bold text-lg text-[#102D3A]">Tableau de recrutement</h2><p className="text-sm text-slate-500">Offres et candidatures de votre organisation.</p></div><button onClick={() => void loadEmployerJobs()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>{employerJobs.length === 0 ? <p className="text-sm text-slate-500">Aucune offre pour cette entreprise.</p> : <div className="grid md:grid-cols-2 gap-3">{employerJobs.map(job => <button key={job.id} onClick={() => void loadJobApplications(job.id)} className={`text-left rounded-xl border p-4 ${selectedJobId === job.id ? 'border-[#087F70] bg-emerald-50' : 'border-slate-200'}`}><div className="font-bold text-sm">{job.title}</div><div className="text-xs text-slate-500 mt-1">{job.city} · {job.status} · {job.referenceCode}</div><div className="flex flex-wrap gap-2 mt-3">{Object.entries(job.applicationCounts || {}).map(([status,count]) => <span key={status} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{status}: {String(count)}</span>)}</div></button>)}</div>}
+        <div className="border-t border-slate-200 pt-4 space-y-3"><div className="flex items-center justify-between gap-2"><h3 className="font-bold text-sm">Contrats de l’entreprise ({employerContracts.length})</h3><button onClick={() => void loadEmployerContractWorkspace()} className="text-xs font-bold text-[#087F70]">Actualiser</button></div>
+          {employerContracts.length === 0 ? <p className="text-xs text-slate-500">Aucun brouillon de contrat. Les modèles disponibles dépendent de la validation juridique du pays.</p> : <div className="space-y-2">{employerContracts.map(contract => <div key={contract.id} className="rounded-lg border border-slate-200 p-3 flex flex-wrap justify-between gap-2"><div><div className="text-xs font-bold text-[#102D3A]">{contract.termsSnapshot?.offer?.jobTitle || 'Contrat de travail'}</div><div className="text-[11px] text-slate-500">{contract.termsSnapshot?.candidate?.fullName || 'Candidat'} · {contract.language?.toUpperCase()} · v{contract.templateVersion}</div></div><span className="h-fit rounded-full bg-amber-50 text-amber-800 px-2 py-1 text-[10px] font-bold">{contract.status}</span></div>)}</div>}
+          {approvedContractTemplates.length === 0 && <p className="text-[11px] text-amber-800 bg-amber-50 rounded-lg p-3">Aucun modèle juridiquement approuvé n’est disponible pour le pays de cette entreprise. Contactez l’administrateur local après validation par un juriste du pays.</p>}
+        </div>
         {selectedJobId && <div className="border-t border-slate-200 pt-4 space-y-3"><h3 className="font-bold text-sm">Candidatures reçues ({jobApplications.length})</h3>{jobApplications.length === 0 ? <p className="text-sm text-slate-500">Aucune candidature reçue pour cette offre.</p> : jobApplications.map(app => <article key={app.id} className="rounded-xl border border-slate-200 p-4 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-bold text-sm">{app.candidateName || app.headline || 'Candidat'}</div><div className="text-xs text-slate-500">{app.headline || 'Profil professionnel'} · {app.city || 'Ville non renseignée'} · {app.experienceYears} an(s) d’expérience</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{app.status}</span></div>{app.skills?.length > 0 && <div className="text-xs text-slate-600">Compétences : {app.skills.join(', ')}</div>}{app.coverLetter && <p className="text-sm text-slate-600 whitespace-pre-line">{app.coverLetter}</p>}
                 <div className="rounded-lg border border-slate-200 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Documents partagés par le candidat</div>{(applicationDocuments[app.id] || []).length === 0 ? <p className="text-xs text-slate-500">Aucun document partagé pour cette candidature.</p> : (applicationDocuments[app.id] || []).map((doc: any) => <div key={doc.id} className="flex flex-wrap items-center justify-between gap-2 text-xs"><span>{doc.originalFileName} · {doc.scanStatus}</span>{doc.downloadUrl ? <a href={doc.downloadUrl} target="_blank" rel="noreferrer" className="font-bold text-[#087F70] underline">Télécharger</a> : <span className="text-amber-700">Bloqué jusqu’à validation antivirus</span>}</div>)}</div>
                 <div className="rounded-lg border border-slate-200 p-3 space-y-3">
@@ -621,7 +675,14 @@ export const EmploymentModule: React.FC = () => {
                         <button disabled={busy} onClick={() => void saveInterviewEvaluation(interview.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">{interview.myEvaluation ? 'Mettre à jour mon évaluation' : 'Enregistrer mon évaluation'}</button>
                       </div>;
                     })}
-                </div><div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div>{app.status === 'OFFER' && <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 space-y-2">
+                </div><div className="rounded-lg bg-slate-50 p-3 space-y-2"><div className="text-xs font-bold text-slate-700">Planifier un entretien</div><div className="grid sm:grid-cols-2 gap-2"><input type="datetime-local" value={interviewForm.startsAt} onChange={e => setInterviewForm({...interviewForm,startsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><input type="datetime-local" value={interviewForm.endsAt} onChange={e => setInterviewForm({...interviewForm,endsAt:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /><select value={interviewForm.mode} onChange={e => setInterviewForm({...interviewForm,mode:e.target.value})} className="rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="VIDEO">Visioconférence</option><option value="PHONE">Téléphone</option><option value="ONSITE">Sur site</option></select><input value={interviewForm.locationOrUrl} onChange={e => setInterviewForm({...interviewForm,locationOrUrl:e.target.value})} placeholder="Lien vidéo, téléphone ou adresse" className="rounded-lg border border-slate-300 px-2 py-2 text-xs" /></div><input value={interviewForm.timezone} onChange={e => setInterviewForm({...interviewForm,timezone:e.target.value})} placeholder="Fuseau IANA (ex. Africa/Abidjan)" className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /><button disabled={busy} onClick={() => void scheduleInterview(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Envoyer l’invitation</button></div>{app.status === 'HIRED' && <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3 space-y-2">
+                  <div className="text-xs font-bold text-slate-700">Préparer le contrat de travail</div>
+                  {approvedContractTemplates.filter(t => t.contractType === app.contractType || t.contractType === 'ALL').length === 0
+                    ? <p className="text-[11px] text-slate-600">Aucun modèle approuvé correspondant au type de contrat et au pays de l’entreprise.</p>
+                    : <><select value={contractTemplateByApplication[app.id] || ''} onChange={e => setContractTemplateByApplication({...contractTemplateByApplication,[app.id]:e.target.value})} className="w-full rounded-lg border border-slate-300 px-2 py-2 text-xs"><option value="">Choisir un modèle approuvé</option>{approvedContractTemplates.filter(t => t.contractType === app.contractType || t.contractType === 'ALL').map(t => <option key={t.id} value={t.id}>{t.title} · {t.language.toUpperCase()} · v{t.version}</option>)}</select><button disabled={busy || !contractTemplateByApplication[app.id]} onClick={() => void createEmploymentContractDraft(app.id)} className="rounded-lg bg-[#102D3A] text-white px-3 py-2 text-xs font-bold disabled:opacity-50">Créer le brouillon</button></>}
+                  <p className="text-[10px] text-amber-800">Le brouillon reprend les conditions de l’offre acceptée. Il ne sera ni signé ni activé automatiquement.</p>
+                </div>}
+                {app.status === 'OFFER' && <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 space-y-2">
                   <div className="text-xs font-bold text-slate-700">Proposition d’embauche</div>
                   <div className="grid sm:grid-cols-2 gap-2">
                     <label className="text-[11px] text-slate-600">Salaire proposé<input type="number" min="0.01" step="0.01" value={offerDraft.salaryAmount} onChange={e => setOfferDraft({...offerDraft,salaryAmount:e.target.value})} placeholder="Montant" className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-xs" /></label>
