@@ -24,6 +24,7 @@ import {
   disputes,
   enrollments,
   employerVerifications,
+  employmentOffers,
   evaluations,
   jobPosts,
   candidateProfiles,
