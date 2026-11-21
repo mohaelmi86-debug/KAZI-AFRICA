@@ -1,7 +1,11 @@
+import fs from 'node:fs';
 import { applicationDefault, getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getStorage } from 'firebase-admin/storage';
-import firebaseConfig from '../../firebase-applet-config.json';
+
+const firebaseConfig = JSON.parse(
+  fs.readFileSync(new URL('../../firebase-applet-config.json', import.meta.url), 'utf8')
+) as { projectId: string; storageBucket?: string };
 
 const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || firebaseConfig.projectId;
 const storageBucket = process.env.FIREBASE_STORAGE_BUCKET?.trim() || firebaseConfig.storageBucket;
