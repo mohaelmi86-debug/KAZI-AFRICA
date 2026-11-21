@@ -20,10 +20,6 @@ function toWinAnsiHex(value: string): string {
   }).join('');
 }
 
-function escapePdfLiteral(value: string): string {
-  return value.replace(/[\\()]/g, (character) => `\\${character}`);
-}
-
 function wrapText(value: string, maxLength = 92): string[] {
   const result: string[] = [];
   for (const paragraph of value.replace(/\r/g, '').split('\n')) {
