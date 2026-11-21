@@ -3405,20 +3405,33 @@ app.post('/api/disputes', requireAuth, async (req: AuthRequest, res) => {
 app.get('/api/enterprise/overview', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = req.authCtx!;
-    const allOrgs = await db.select().from(organizations);
-    const memberLinks = await db
-      .select()
-      .from(orgMembers)
-      .where(eq(orgMembers.profileId, ctx.profileId));
+    const isSuperAdmin = ctx.roles.includes('SUPER_ADMIN');
+    const memberLinks = isSuperAdmin
+      ? []
+      : await db
+          .select({ organizationId: orgMembers.organizationId })
+          .from(orgMembers)
+          .where(and(eq(orgMembers.profileId, ctx.profileId), eq(orgMembers.isActive, true)));
 
-    const accessibleOrgIds = new Set(memberLinks.map((m) => m.organizationId));
-    const orgs = ctx.roles.includes('SUPER_ADMIN')
-      ? allOrgs
-      : allOrgs.filter((o) => o.ownerProfileId === ctx.profileId || accessibleOrgIds.has(o.id));
+    const memberOrgIds = [...new Set(memberLinks.map((m) => m.organizationId))];
+    const orgs = isSuperAdmin
+      ? await db.select().from(organizations)
+      : memberOrgIds.length
+        ? await db.select().from(organizations).where(
+            or(eq(organizations.ownerProfileId, ctx.profileId), inArray(organizations.id, memberOrgIds))
+          )
+        : await db.select().from(organizations).where(eq(organizations.ownerProfileId, ctx.profileId));
 
-    const targetOrg = orgs[0] || null;
+    const requestedOrgId = typeof req.query.organizationId === 'string' ? req.query.organizationId : '';
+    const targetOrg = requestedOrgId
+      ? orgs.find((org) => org.id === requestedOrgId) || null
+      : orgs[0] || null;
+
+    if (requestedOrgId && !targetOrg) {
+      return res.status(404).json({ error: 'Organization not found or access denied' });
+    }
     if (!targetOrg) {
-      return res.json({ organization: null, members: [], interventions: [], country: null });
+      return res.json({ organization: null, organizations: orgs, members: [], interventions: [], country: null });
     }
 
     const [orgCountry] = await db
@@ -3448,6 +3461,7 @@ app.get('/api/enterprise/overview', requireAuth, async (req: AuthRequest, res) =
 
     res.json({
       organization: targetOrg,
+      organizations: orgs,
       country: orgCountry || null,
       members: members.map((m) => ({
         ...m.member,
