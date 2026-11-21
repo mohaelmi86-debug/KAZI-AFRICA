@@ -1024,7 +1024,9 @@ app.patch('/api/employment/admin/employer-verifications/:id', requireAuth, rateL
     if (!isValidUuid(id)) return res.status(400).json({ error: 'Invalid verification ID' });
     const action = String(req.body?.action || '').toUpperCase();
     const note = String(req.body?.note || '').trim().slice(0, 2000);
+    const evidenceReference = String(req.body?.evidenceReference || '').trim().slice(0, 300);
     if (!['VERIFY', 'REJECT', 'REQUEST_INFO'].includes(action)) return res.status(400).json({ error: 'Invalid review action' });
+    if (action === 'VERIFY' && evidenceReference.length < 5) return res.status(400).json({ error: 'An official registry or document evidence reference is required to verify an employer' });
     const [record] = await db.select().from(employerVerifications).where(eq(employerVerifications.id, id)).limit(1);
     if (!record) return res.status(404).json({ error: 'Verification not found' });
     const [org] = await db.select().from(organizations).where(eq(organizations.id, record.organizationId)).limit(1);
@@ -1035,7 +1037,7 @@ app.patch('/api/employment/admin/employer-verifications/:id', requireAuth, rateL
     }
     const status = action === 'VERIFY' ? 'VERIFIED' : action === 'REJECT' ? 'REJECTED' : 'MORE_INFO_REQUIRED';
     const [updated] = await db.update(employerVerifications).set({
-      status, reviewNote: note || null, reviewedByProfileId: ctx.profileId, reviewedAt: new Date(), updatedAt: new Date(),
+      status, reviewNote: note || null, reviewEvidenceReference: action === 'VERIFY' ? evidenceReference : null, reviewedByProfileId: ctx.profileId, reviewedAt: new Date(), updatedAt: new Date(),
     }).where(eq(employerVerifications.id, id)).returning();
     await db.insert(auditLogs).values({
       actorProfileId: ctx.profileId, actorUid: ctx.uid, actorRole: ctx.activeRole,
