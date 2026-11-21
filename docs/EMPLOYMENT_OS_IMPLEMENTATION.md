@@ -219,3 +219,15 @@ La migration doit être appliquée à l'environnement cible avant utilisation. L
 
 Ces routes sont ajoutées au périmètre livré de la PR. Le détail d'offre est disponible via API ; l'écran dédié et la navigation depuis la carte restent à intégrer.
 
+
+## 10. Tranche entretiens et évaluations
+
+- Schéma et migration `0002_employment_interviews.sql` : entretiens rattachés à une candidature, horaires de début/fin, fuseau IANA, mode, lieu/lien, réponse du candidat et statut.
+- API recruteur `POST /api/employment/applications/:id/interviews` : contrôle de l'organisation, validation des dates/fuseaux/modes, invitation et passage contrôlé de la candidature au statut INTERVIEW.
+- API candidat `GET /api/employment/me/interviews` : liste les invitations de ses propres candidatures, sans notes internes.
+- API candidat `PATCH /api/employment/interviews/:id/response` : confirmation ou refus d'une invitation future, avec message facultatif et audit.
+- API recruteur `POST /api/employment/interviews/:id/evaluation` : évaluation privée par recruteur, score 1–5, recommandation, points forts et réserves ; une seule évaluation par évaluateur et entretien, modifiable.
+- Interface : planification depuis la candidature et espace candidat « Mes entretiens » avec confirmation/refus.
+
+La migration doit être appliquée avant activation de ces endpoints en base. L'interface de consultation et de saisie des évaluations recruteur reste à finaliser ; les endpoints et tables sont présents.
+
