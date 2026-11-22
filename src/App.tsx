@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { Globe } from 'lucide-react';
 import { AppProvider, useApp } from './app/AppContext';
@@ -13,22 +13,40 @@ import {
   WorkspaceUtilityBar,
 } from './components/DesignSystem';
 import { OfflineIndicator } from './components/PWAControls';
-import { ClientHomeModule } from './modules/clients/ClientHomeModule';
-import { ProfessionalsDirectoryModule } from './modules/professionals/ProfessionalsDirectoryModule';
-import { MissionsBookingsModule } from './modules/bookings/MissionsBookingsModule';
-import { ProWorkspaceModule } from './modules/professionals/ProWorkspaceModule';
-import { KaziSkillsModule } from './modules/kazi-skills/KaziSkillsModule';
-import { EnterpriseModule } from './modules/companies/EnterpriseModule';
-import { AdminConsoleModule } from './modules/administration/AdminConsoleModule';
-import { OpportunitiesModule } from './modules/home/OpportunitiesModule';
-import { CountriesExplorerModule } from './modules/home/CountriesExplorerModule';
-import {
-  AboutPage,
-  ContactPage,
-  HelpPage,
-  PrivacyPage,
-  TermsPage,
-} from './modules/home/InfoLegalViews';
+// Route-level code splitting keeps heavy business modules out of the initial bundle.
+const ClientHomeModule = lazy(() =>
+  import('./modules/clients/ClientHomeModule').then((module) => ({ default: module.ClientHomeModule })),
+);
+const ProfessionalsDirectoryModule = lazy(() =>
+  import('./modules/professionals/ProfessionalsDirectoryModule').then((module) => ({ default: module.ProfessionalsDirectoryModule })),
+);
+const MissionsBookingsModule = lazy(() =>
+  import('./modules/bookings/MissionsBookingsModule').then((module) => ({ default: module.MissionsBookingsModule })),
+);
+const ProWorkspaceModule = lazy(() =>
+  import('./modules/professionals/ProWorkspaceModule').then((module) => ({ default: module.ProWorkspaceModule })),
+);
+const KaziSkillsModule = lazy(() =>
+  import('./modules/kazi-skills/KaziSkillsModule').then((module) => ({ default: module.KaziSkillsModule })),
+);
+const EnterpriseModule = lazy(() =>
+  import('./modules/companies/EnterpriseModule').then((module) => ({ default: module.EnterpriseModule })),
+);
+const AdminConsoleModule = lazy(() =>
+  import('./modules/administration/AdminConsoleModule').then((module) => ({ default: module.AdminConsoleModule })),
+);
+const OpportunitiesModule = lazy(() =>
+  import('./modules/home/OpportunitiesModule').then((module) => ({ default: module.OpportunitiesModule })),
+);
+const CountriesExplorerModule = lazy(() =>
+  import('./modules/home/CountriesExplorerModule').then((module) => ({ default: module.CountriesExplorerModule })),
+);
+const InfoLegalViews = () => import('./modules/home/InfoLegalViews');
+const AboutPage = lazy(() => InfoLegalViews().then((module) => ({ default: module.AboutPage })));
+const ContactPage = lazy(() => InfoLegalViews().then((module) => ({ default: module.ContactPage })));
+const HelpPage = lazy(() => InfoLegalViews().then((module) => ({ default: module.HelpPage })));
+const PrivacyPage = lazy(() => InfoLegalViews().then((module) => ({ default: module.PrivacyPage })));
+const TermsPage = lazy(() => InfoLegalViews().then((module) => ({ default: module.TermsPage })));
 
 class BrandErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -274,6 +292,13 @@ const AppShell: React.FC = () => {
       <WorkspaceUtilityBar />
       <main className="flex-1">
         <BrandErrorBoundary>
+          <Suspense
+            fallback={
+              <div className="mx-auto flex min-h-[40vh] max-w-7xl items-center justify-center px-4" role="status" aria-live="polite">
+                <span className="text-sm font-medium text-slate-600">Chargement de votre espace…</span>
+              </div>
+            }
+          >
           <Routes>
             <Route path="/" element={<ClientHomeModule />} />
             <Route path="/professionals" element={<ProfessionalsDirectoryModule />} />
@@ -292,6 +317,7 @@ const AppShell: React.FC = () => {
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="*" element={<NotFoundView />} />
           </Routes>
+          </Suspense>
         </BrandErrorBoundary>
       </main>
       <KaziFooter />
